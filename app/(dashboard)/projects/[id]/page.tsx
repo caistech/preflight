@@ -1,6 +1,7 @@
 import { createServiceClient } from '@/lib/supabase/service';
 import { DrafterLinkPanel } from './drafter-link-panel';
 import { SourcesPanel } from './sources-panel';
+import { AddressEditor } from './address-editor';
 
 export const dynamic = 'force-dynamic';
 
@@ -159,6 +160,14 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
             </table>
           </div>
         )}
+      </section>
+
+      {/* Project address — uses Mapbox autocomplete */}
+      <section className="mt-10 rounded-2xl border border-gray-800 bg-gray-900/30 p-5">
+        <AddressEditor
+          projectId={id}
+          initialAddress={factRows.find((f) => f.key === 'address_summary')?.value ?? null}
+        />
       </section>
 
       {/* Project facts */}
