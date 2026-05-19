@@ -1,0 +1,204 @@
+import Link from 'next/link';
+import { createServiceClient } from '@/lib/supabase/service';
+import { hashDrafterToken } from '@/lib/drafter-token';
+
+export const dynamic = 'force-dynamic';
+
+interface Props {
+  params: Promise<{ token: string; runId: string }>;
+}
+
+interface ResultLine {
+  outcome: string;
+  message: string;
+  severity: string;
+  requirement: string;
+  source: string;
+}
+
+export default async function DrafterRunPage({ params }: Props) {
+  const { token, runId } = await params;
+  const db = createServiceClient();
+
+  // Verify the token still owns this run — defence in depth even with a UUID
+  let tokenInvalid = false;
+  let drafterTokenId: string | null = null;
+  let projectName = '';
+
+  try {
+    const hash = hashDrafterToken(token);
+    const { data: t } = await db
+      .from('drafter_tokens')
+      .select('id, expires_at, revoked_at, projects(name)')
+      .eq('token_hash', hash)
+      .single();
+    if (!t) tokenInvalid = true;
+    else if (t.revoked_at) tokenInvalid = true;
+    else if (new Date(t.expires_at) < new Date()) tokenInvalid = true;
+    else {
+      drafterTokenId = t.id;
+      const p = (t.projects ?? {}) as { name?: string };
+      projectName = p.name ?? '';
+    }
+  } catch {
+    tokenInvalid = true;
+  }
+
+  if (tokenInvalid || !drafterTokenId) {
+    return (
+      <main className="min-h-screen bg-gray-950 text-white">
+        <div className="mx-auto max-w-md px-6 py-16">
+          <div className="mb-2 text-sm text-emerald-400">Preflight</div>
+          <h1 className="mb-2 text-3xl font-bold">Link not valid</h1>
+        </div>
+      </main>
+    );
+  }
+
+  // Pull the run + drawing set + results, scoped by drafter_token_id
+  const { data: run } = await db
+    .from('check_runs')
+    .select('id, drafter_token_id, status, hard_fails, needs_review, confirmed_ok, created_at, completed_at, drawing_sets(filename, page_count, byte_size)')
+    .eq('id', runId)
+    .single();
+
+  if (!run || run.drafter_token_id !== drafterTokenId) {
+    return (
+      <main className="min-h-screen bg-gray-950 text-white">
+        <div className="mx-auto max-w-md px-6 py-16">
+          <div className="mb-2 text-sm text-emerald-400">Preflight</div>
+          <h1 className="mb-2 text-3xl font-bold">Run not found</h1>
+          <p className="text-sm text-gray-400">
+            This result either does not exist or belongs to a different drafter link.
+          </p>
+          <Link
+            href={`/drafter/${token}`}
+            className="mt-6 inline-block text-sm text-emerald-400 hover:underline"
+          >
+            ← Back to your project page
+          </Link>
+        </div>
+      </main>
+    );
+  }
+
+  const { data: results } = await db
+    .from('check_results')
+    .select('id, outcome, message, evidence, register_rows(requirement, source, severity)')
+    .eq('check_run_id', runId);
+
+  const hardFails: ResultLine[] = [];
+  const needsReview: ResultLine[] = [];
+  const confirmedOk: ResultLine[] = [];
+  for (const r of results ?? []) {
+    const reg = ((r as { register_rows?: { requirement?: string; source?: string; severity?: string } }).register_rows ?? {}) as {
+      requirement?: string;
+      source?: string;
+      severity?: string;
+    };
+    const line: ResultLine = {
+      outcome: r.outcome,
+      message: r.message ?? '',
+      severity: reg.severity ?? 'review',
+      requirement: reg.requirement ?? '',
+      source: reg.source ?? '',
+    };
+    if (r.outcome === 'fail' && reg.severity === 'hard-fail') hardFails.push(line);
+    else if (r.outcome === 'fail' || r.outcome === 'unsure') needsReview.push(line);
+    else if (r.outcome === 'pass') confirmedOk.push(line);
+  }
+
+  const ds = ((run as { drawing_sets?: { filename?: string | null; page_count?: number; byte_size?: number } }).drawing_sets ?? {}) as {
+    filename?: string | null;
+    page_count?: number;
+    byte_size?: number;
+  };
+
+  return (
+    <main className="min-h-screen bg-gray-950 text-white">
+      <div className="mx-auto max-w-3xl px-6 py-12">
+        <Link
+          href={`/drafter/${token}`}
+          className="mb-4 inline-block text-xs text-emerald-400 hover:underline"
+        >
+          ← Back to {projectName || 'project'}
+        </Link>
+
+        <div className="mb-2 text-sm text-emerald-400">Preflight · result</div>
+        <h1 className="mb-2 text-2xl font-bold">{ds.filename ?? '(unnamed upload)'}</h1>
+        <p className="mb-8 max-w-2xl text-sm text-gray-400">
+          Run on {new Date(run.created_at).toLocaleString('en-AU')}
+          {ds.page_count ? ` · ${ds.page_count} pages` : ''}
+          {ds.byte_size ? ` · ${(ds.byte_size / 1024 / 1024).toFixed(1)} MB` : ''}
+        </p>
+
+        <div className="mb-8 grid grid-cols-3 gap-3">
+          <div className="rounded-2xl border border-red-500/30 bg-red-500/10 p-4 text-center">
+            <div className="text-3xl font-bold text-red-300">{run.hard_fails ?? 0}</div>
+            <div className="text-xs text-red-400">Hard fails</div>
+          </div>
+          <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4 text-center">
+            <div className="text-3xl font-bold text-amber-300">{run.needs_review ?? 0}</div>
+            <div className="text-xs text-amber-400">Needs eyes</div>
+          </div>
+          <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-4 text-center">
+            <div className="text-3xl font-bold text-emerald-300">{run.confirmed_ok ?? 0}</div>
+            <div className="text-xs text-emerald-400">Confirmed OK</div>
+          </div>
+        </div>
+
+        {hardFails.length > 0 && (
+          <Section title="🔴 Hard fails — fix before submission" lines={hardFails} tone="red" />
+        )}
+        {needsReview.length > 0 && (
+          <Section title="🟡 Needs eyes — read and decide" lines={needsReview} tone="amber" />
+        )}
+        {confirmedOk.length > 0 && (
+          <Section title="✅ Confirmed OK" lines={confirmedOk} tone="emerald" collapsible />
+        )}
+
+        {hardFails.length + needsReview.length + confirmedOk.length === 0 && (
+          <div className="rounded-2xl border border-gray-800 bg-gray-900/30 p-6 text-sm text-gray-400">
+            No results recorded for this run. The check engine may have errored on every row,
+            or the upload completed before any register row evaluated.
+          </div>
+        )}
+      </div>
+    </main>
+  );
+}
+
+function Section({
+  title,
+  lines,
+  tone,
+  collapsible,
+}: {
+  title: string;
+  lines: ResultLine[];
+  tone: 'red' | 'amber' | 'emerald';
+  collapsible?: boolean;
+}) {
+  const borderClass =
+    tone === 'red' ? 'border-red-500/30' : tone === 'amber' ? 'border-amber-500/30' : 'border-emerald-500/30';
+  return (
+    <details
+      className={`mb-4 rounded-2xl border bg-gray-900/30 ${borderClass}`}
+      open={!collapsible}
+    >
+      <summary className="cursor-pointer list-none px-5 py-3 text-sm font-semibold text-gray-200">
+        {title}{' '}
+        <span className="text-xs font-normal text-gray-500">({lines.length})</span>
+      </summary>
+      <div className="space-y-2 px-5 pb-5">
+        {lines.map((l, i) => (
+          <div key={i} className="rounded-lg border border-gray-800 bg-gray-950/60 p-4 text-sm">
+            <div className="mb-1 text-gray-100">{l.requirement}</div>
+            <div className="mb-2 text-xs text-gray-400">{l.message}</div>
+            <div className="text-xs text-gray-500">Source: {l.source}</div>
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}

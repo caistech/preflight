@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { createServiceClient } from '@/lib/supabase/service';
 import { hashDrafterToken } from '@/lib/drafter-token';
 import { DrafterUpload } from './drafter-upload';
@@ -6,6 +7,16 @@ export const dynamic = 'force-dynamic';
 
 interface Props {
   params: Promise<{ token: string }>;
+}
+
+interface PriorRun {
+  id: string;
+  created_at: string;
+  filename: string | null;
+  hard_fails: number;
+  needs_review: number;
+  confirmed_ok: number;
+  status: string;
 }
 
 export default async function DrafterPage({ params }: Props) {
@@ -19,6 +30,8 @@ export default async function DrafterPage({ params }: Props) {
   let projectUploadInstructions: string | null = null;
   let projectAddress: string | null = null;
   let drafterName: string | null = null;
+  let drafterTokenId: string | null = null;
+  let priorRuns: PriorRun[] = [];
   let tokenInvalid = false;
   let tokenInvalidReason = '';
 
@@ -42,6 +55,7 @@ export default async function DrafterPage({ params }: Props) {
     } else {
       projectId = t.project_id;
       drafterName = t.drafter_name;
+      drafterTokenId = t.id;
       const p = (t.projects ?? {}) as {
         name?: string;
         council?: string | null;
@@ -60,6 +74,27 @@ export default async function DrafterPage({ params }: Props) {
         .eq('key', 'address_summary')
         .single();
       projectAddress = addrFact?.value ?? null;
+
+      // Prior runs scoped to THIS drafter token (so different drafters on the
+      // same project don't see each other's uploads).
+      const { data: runs } = await db
+        .from('check_runs')
+        .select('id, status, hard_fails, needs_review, confirmed_ok, created_at, drawing_set_id, drawing_sets(filename)')
+        .eq('drafter_token_id', drafterTokenId)
+        .order('created_at', { ascending: false })
+        .limit(20);
+      priorRuns = (runs ?? []).map((r) => {
+        const ds = (r as { drawing_sets?: { filename?: string | null } }).drawing_sets;
+        return {
+          id: r.id,
+          created_at: r.created_at,
+          filename: ds?.filename ?? null,
+          hard_fails: r.hard_fails ?? 0,
+          needs_review: r.needs_review ?? 0,
+          confirmed_ok: r.confirmed_ok ?? 0,
+          status: r.status,
+        };
+      });
     }
   } catch (e) {
     tokenInvalid = true;
@@ -126,8 +161,44 @@ export default async function DrafterPage({ params }: Props) {
           <p className="text-sm text-gray-300">{uploadGuidance}</p>
         </section>
 
+        {/* Prior runs — only shown when there is history */}
+        {priorRuns.length > 0 && (
+          <section className="mb-6 rounded-2xl border border-gray-800 bg-gray-900/30 p-5">
+            <div className="mb-3 flex items-baseline justify-between">
+              <div className="text-xs uppercase tracking-wide text-gray-500">Your prior runs</div>
+              <div className="text-xs text-gray-500">{priorRuns.length} {priorRuns.length === 1 ? 'run' : 'runs'}</div>
+            </div>
+            <ul className="divide-y divide-gray-800">
+              {priorRuns.map((r) => (
+                <li key={r.id} className="flex flex-col gap-1 py-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <div className="text-sm text-gray-200">{r.filename ?? '(unnamed upload)'}</div>
+                    <div className="text-xs text-gray-500">{new Date(r.created_at).toLocaleString('en-AU')}</div>
+                  </div>
+                  <div className="flex items-center gap-3 text-xs">
+                    <span className="text-red-400">🔴 {r.hard_fails}</span>
+                    <span className="text-amber-400">🟡 {r.needs_review}</span>
+                    <span className="text-emerald-400">✅ {r.confirmed_ok}</span>
+                    <Link
+                      href={`/drafter/${token}/runs/${r.id}`}
+                      className="ml-2 rounded-md border border-gray-700 px-2 py-1 text-gray-300 hover:border-emerald-500 hover:text-emerald-400"
+                    >
+                      View result
+                    </Link>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+
         {/* Upload widget */}
-        <DrafterUpload token={token} projectId={projectId} />
+        <section>
+          <div className="mb-3 text-xs uppercase tracking-wide text-gray-500">
+            {priorRuns.length > 0 ? 'Upload a new revision' : 'Upload the drawing set'}
+          </div>
+          <DrafterUpload token={token} projectId={projectId} />
+        </section>
 
         {/* How it works */}
         <section className="mt-10 rounded-2xl border border-gray-800 bg-gray-900/30 p-5 text-sm text-gray-300">

@@ -1,5 +1,6 @@
 import { createServiceClient } from '@/lib/supabase/service';
 import { DrafterLinkPanel } from './drafter-link-panel';
+import { SourcesPanel } from './sources-panel';
 
 export const dynamic = 'force-dynamic';
 
@@ -44,29 +45,47 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
   const { id } = await params;
   const db = createServiceClient();
 
-  const [{ data: project }, { data: facts }, { data: register }, { data: tokens }, { data: runs }] =
-    await Promise.all([
-      db.from('projects').select('*').eq('id', id).single(),
-      db.from('project_facts').select('key, value, source, notes').eq('project_id', id).order('key'),
-      db
-        .from('register_rows')
-        .select('id, requirement, source, source_url, check_type, severity, active')
-        .eq('project_id', id)
-        .order('severity', { ascending: false })
-        .order('created_at', { ascending: true }),
-      db
-        .from('drafter_tokens')
-        .select('id, drafter_name, expires_at, revoked_at, uses, last_used_at, created_at')
-        .eq('project_id', id)
-        .order('created_at', { ascending: false })
-        .limit(20),
-      db
-        .from('check_runs')
-        .select('id, status, hard_fails, needs_review, confirmed_ok, created_at, drawing_set_id')
-        .eq('project_id', id)
-        .order('created_at', { ascending: false })
-        .limit(10),
-    ]);
+  const [
+    { data: project },
+    { data: facts },
+    { data: register },
+    { data: tokens },
+    { data: runs },
+    { data: kbDocs },
+    { data: driveConn },
+  ] = await Promise.all([
+    db.from('projects').select('*').eq('id', id).single(),
+    db.from('project_facts').select('key, value, source, notes').eq('project_id', id).order('key'),
+    db
+      .from('register_rows')
+      .select('id, requirement, source, source_url, check_type, severity, active')
+      .eq('project_id', id)
+      .order('severity', { ascending: false })
+      .order('created_at', { ascending: true }),
+    db
+      .from('drafter_tokens')
+      .select('id, drafter_name, expires_at, revoked_at, uses, last_used_at, created_at')
+      .eq('project_id', id)
+      .order('created_at', { ascending: false })
+      .limit(20),
+    db
+      .from('check_runs')
+      .select('id, status, hard_fails, needs_review, confirmed_ok, created_at, drawing_set_id')
+      .eq('project_id', id)
+      .order('created_at', { ascending: false })
+      .limit(10),
+    db
+      .from('kb_documents')
+      .select('id, title, source_kind, source_ref, created_at')
+      .eq('project_id', id)
+      .order('created_at', { ascending: false })
+      .limit(50),
+    db
+      .from('drive_connections')
+      .select('id, paused')
+      .eq('project_id', id)
+      .maybeSingle(),
+  ]);
 
   if (!project) {
     return (
@@ -78,6 +97,17 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
   const registerRows = (register ?? []) as RegisterRow[];
   const drafterTokens = (tokens ?? []) as DrafterToken[];
   const recentRuns = (runs ?? []) as CheckRun[];
+  const existingKbDocs = (kbDocs ?? []) as Array<{
+    id: string;
+    title: string;
+    source_kind: string;
+    source_ref: string | null;
+    created_at: string;
+  }>;
+  const driveConnected = !!driveConn && !driveConn.paused;
+  const inboundEmailAlias = `${project.slug}@inbound.${
+    (process.env.NEXT_PUBLIC_APP_URL ?? '').replace(/^https?:\/\//, '').replace(/\/.*$/, '') || 'preflight.app'
+  }`;
 
   return (
     <div className="mx-auto max-w-5xl px-6 py-10">
@@ -162,6 +192,14 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
           </div>
         )}
       </section>
+
+      {/* Sources — background context for manual-check rules */}
+      <SourcesPanel
+        projectId={id}
+        inboundEmailAlias={inboundEmailAlias}
+        driveConnected={driveConnected}
+        existingDocs={existingKbDocs}
+      />
 
       {/* Requirements register */}
       <section className="mt-10">

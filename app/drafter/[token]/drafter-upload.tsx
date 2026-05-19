@@ -25,6 +25,7 @@ export function DrafterUpload({ token, projectId: _projectId }: { token: string;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<UploadResponse | null>(null);
+  const permalinkBase = `/drafter/${token}/runs`;
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -89,7 +90,20 @@ export function DrafterUpload({ token, projectId: _projectId }: { token: string;
         </button>
       </form>
 
-      {result && <TriageSheet result={result} />}
+      {result && (
+        <>
+          <div className="mt-6 rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3 text-xs text-emerald-200">
+            This result is saved. Permanent link to come back to it later:{' '}
+            <a
+              href={`${permalinkBase}/${result.check_run_id}`}
+              className="font-mono text-emerald-300 hover:underline"
+            >
+              {permalinkBase}/{result.check_run_id}
+            </a>
+          </div>
+          <TriageSheet result={result} />
+        </>
+      )}
     </div>
   );
 }
