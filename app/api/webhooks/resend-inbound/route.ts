@@ -82,15 +82,22 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: true, ignored: `event type ${envelope.type}` });
   }
 
-  const data = envelope.data ?? envelope;
+  const data = (envelope.data ?? envelope) as {
+    from?: { email?: string; name?: string } | string;
+    to?: string[] | string;
+    subject?: string;
+    text?: string;
+    html?: string;
+    email_id?: string;
+  };
   const fromRaw = data.from;
   const toRaw = data.to;
   const fromEmail = typeof fromRaw === 'string' ? fromRaw : fromRaw?.email;
   const toEmail = Array.isArray(toRaw) ? toRaw[0] : toRaw;
 
   const messageId =
-    (envelope.id as string | undefined) ??
-    (envelope.message_id as string | undefined) ??
+    envelope.id ??
+    envelope.message_id ??
     data.email_id ??
     headers['svix-id'] ??
     `inbound-${Date.now()}`;
