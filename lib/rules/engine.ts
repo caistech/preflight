@@ -98,37 +98,95 @@ function evalLogicRule(spec: LogicRuleSpec, input: CheckEvaluationInput): CheckE
     case 'unit_numbering_set': {
       const expected = Number((spec.params?.expected_count as number) ?? 0);
       if (!expected) return { outcome: 'error', message: 'unit_numbering_set requires expected_count' };
-      // Find candidate unit labels: digit-only tokens like "UNIT 1", "UNIT 2", or "1.", "2." in headings.
-      // Conservative: look for "UNIT \d+" or "Lot \d+" occurrences.
-      const re = /\b(?:unit|lot)\s+(\d{1,3})\b/gi;
-      const found = new Set<number>();
-      let m;
-      while ((m = re.exec(input.extractedText)) !== null) {
-        const n = parseInt(m[1], 10);
-        if (n >= 1 && n <= 999) found.add(n);
+
+      // Only relevant on a sheet that actually shows a unit-numbered set —
+      // i.e. a letterbox elevation. Without page-scoping, this rule false-fires
+      // on title-block "UNIT 1" references that appear on every drawing sheet.
+      const pages = splitByPage(input.extractedText);
+      const letterboxPages = pages.filter((p) => /\b(letterbox|letter\s*box|lb\s*elev)/i.test(p));
+      if (letterboxPages.length === 0) {
+        return {
+          outcome: 'not-applicable',
+          message: 'No letterbox elevation found in this set — unit-numbering check only runs on a sheet that lists the cells.',
+        };
       }
+
+      // Extract "UNIT \d+" labels from the letterbox page(s) only — count occurrences so duplicates surface.
+      const re = /\bunit\s+(\d{1,3})\b/gi;
+      const found = new Set<number>();
+      const counts: Record<number, number> = {};
+      let m: RegExpExecArray | null;
+      for (const page of letterboxPages) {
+        while ((m = re.exec(page)) !== null) {
+          const n = parseInt(m[1], 10);
+          if (n >= 1 && n <= 999) {
+            found.add(n);
+            counts[n] = (counts[n] ?? 0) + 1;
+          }
+        }
+      }
+
       const missing: number[] = [];
       for (let i = 1; i <= expected; i++) if (!found.has(i)) missing.push(i);
       const extra = Array.from(found).filter((n) => n > expected || n < 1);
-      if (missing.length === 0 && extra.length === 0) {
-        return { outcome: 'pass', message: `All ${expected} units present, none extra`, evidence: { found: Array.from(found) } };
+      const duplicates = Object.entries(counts).filter(([, c]) => c > 1).map(([n]) => Number(n));
+
+      if (missing.length === 0 && extra.length === 0 && duplicates.length === 0) {
+        return {
+          outcome: 'pass',
+          message: `All ${expected} units present on letterbox, none extra, none duplicated`,
+          evidence: { found: Array.from(found), counts },
+        };
       }
       const bits: string[] = [];
       if (missing.length) bits.push(`missing units: ${missing.join(', ')}`);
+      if (duplicates.length) bits.push(`duplicated units: ${duplicates.join(', ')}`);
       if (extra.length) bits.push(`unexpected units: ${extra.join(', ')}`);
-      return { outcome: 'fail', message: bits.join('; '), evidence: { found: Array.from(found), missing, extra } };
+      return {
+        outcome: 'fail',
+        message: bits.join('; '),
+        evidence: { found: Array.from(found), missing, extra, duplicates, counts },
+      };
     }
     case 'title_block_count': {
       const expected = Number((spec.params?.expected as number) ?? 1);
-      // Crude heuristic — count occurrences of "TITLE BLOCK" or "TITLE:" in the extracted text.
-      const re = /\btitle\s*block\b/gi;
+      // Heuristic: a CAD title block usually clusters a SHEET / PROJECT NO / SCALE 1: / DRAWN / DATE label.
+      // The phrase "TITLE BLOCK" itself almost never appears in the extracted text on real drawings.
+      // We count the SHEET marker as a proxy (each title block carries one).
+      const re = /\bsheet\s+(no\b|number|nr\b)/gi;
       const matches = (input.extractedText.match(re) || []).length;
-      if (matches === expected) return { outcome: 'pass', message: `${expected} title block(s) found as expected`, evidence: { matches } };
-      return { outcome: 'fail', message: `Expected ${expected} title block(s), found ${matches}`, evidence: { matches } };
+      if (matches === 0) {
+        // Could not detect any title-block proxy markers — punt rather than false-pass.
+        return {
+          outcome: 'unsure',
+          message: 'Could not reliably detect title blocks in the extracted text — needs human eyes on the sheet to confirm count.',
+          evidence: { matches, heuristic: 'sheet_no_marker' },
+        };
+      }
+      if (matches === expected) {
+        return { outcome: 'pass', message: `${expected} title block marker(s) found as expected`, evidence: { matches } };
+      }
+      return {
+        outcome: 'fail',
+        message: `Expected ${expected} title block(s), heuristic found ${matches} sheet markers`,
+        evidence: { matches, heuristic: 'sheet_no_marker' },
+      };
     }
     default:
       return { outcome: 'error', message: `Unknown logic-rule: ${spec.logic}` };
   }
+}
+
+/**
+ * Split positioned-text extracted output by the `--- PAGE N ---` markers
+ * the pdfjs extractor emits. Falls back to single-page if no markers exist.
+ */
+function splitByPage(text: string): string[] {
+  if (!text.includes('--- PAGE ')) return [text];
+  return text
+    .split(/\n--- PAGE \d+ ---\n/)
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 function evalCrossRef(spec: CrossRefSpec, input: CheckEvaluationInput): CheckEvaluationResult {
