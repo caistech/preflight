@@ -114,9 +114,8 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
     created_at: string;
   }>;
   const driveConnected = !!driveConn && !driveConn.paused;
-  const inboundEmailAlias = `${project.slug}@inbound.${
-    (process.env.NEXT_PUBLIC_APP_URL ?? '').replace(/^https?:\/\//, '').replace(/\/.*$/, '') || 'preflight.app'
-  }`;
+  const inboundDomain = process.env.RESEND_INBOUND_DOMAIN || 'nexeukro.resend.app';
+  const inboundEmailAlias = `${project.slug}@${inboundDomain}`;
   const recentInbound = (inbound ?? []) as Array<{
     id: string;
     from_address: string | null;
