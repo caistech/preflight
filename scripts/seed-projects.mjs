@@ -110,7 +110,7 @@ const PROJECTS = [
     name: 'Lot 442 Seafields',
     owner_label: 'F2K',
     drafter_label: 'ModularWA',
-    council: 'Wollongong City Council',
+    council: 'City of Greater Geraldton',
     description:
       'Modular dwelling subdivision, 8 units, slab-on-biscuit footing system. F2K + ModularWA workflow.',
     facts: [
@@ -118,17 +118,17 @@ const PROJECTS = [
       { key: 'unit_count', value: '8', source: 'Project definition' },
       { key: 'has_multi_unit_site_plan', value: 'true', source: 'Project definition' },
       { key: 'sheet_is_site_wide', value: 'true', source: 'Project definition (applies to overview sheet)' },
-      { key: 'address_summary', value: 'Lot 442, Seafields Estate', source: 'Project definition' },
+      { key: 'address_summary', value: 'Lot 442 (#31) Half Moon Drive, Geraldton WA', source: 'Project definition' },
     ],
   },
   {
     slug: 'lot-91-wavecrest',
     name: 'Lot 91 Wavecrest',
-    owner_label: 'Unison',
-    drafter_label: 'Unison Drafting',
+    owner_label: 'F2K',
+    drafter_label: 'TBC',
     council: 'Shoalhaven City Council',
     description:
-      'Single-dwelling site, brick-veneer construction. Unison + Unison drafter workflow.',
+      'Single-dwelling site, brick-veneer construction. F2K project; drafter firm to be confirmed.',
     facts: [
       { key: 'footing_system', value: 'concrete-strip', source: 'Project definition' },
       { key: 'unit_count', value: '1', source: 'Project definition' },

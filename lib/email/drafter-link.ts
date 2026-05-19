@@ -27,7 +27,9 @@ export async function sendDrafterLinkEmail(args: SendDrafterLinkArgs): Promise<{
 
   const greeting = args.drafterName ? `Hi ${args.drafterName.split(/\s|—|-/)[0]},` : 'Hi,';
   const expiryLine = args.expiresAt.toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' });
-  const ownerFrom = args.ownerLabel ? ` (${args.ownerLabel})` : '';
+  const operatorLine = args.ownerEmail
+    ? `${args.ownerEmail} has set up a pre-submission triage check for ${args.projectName}${args.ownerLabel ? ` (owned by ${args.ownerLabel})` : ''}.`
+    : `A pre-submission triage check has been set up for ${args.projectName}${args.ownerLabel ? ` (owned by ${args.ownerLabel})` : ''}.`;
   const subject = `Pre-submission triage link — ${args.projectName}`;
 
   const projectDetails = [
@@ -42,7 +44,7 @@ export async function sendDrafterLinkEmail(args: SendDrafterLinkArgs): Promise<{
 
   const textBody = `${greeting}
 
-${args.ownerEmail ?? 'The project team'}${ownerFrom} has set up a pre-submission triage check for this project. This email gives you everything you need; no account, no portal.
+${operatorLine} This email gives you everything you need; no account, no portal.
 
 WHAT THIS IS
 Preflight runs your latest drawing set against the things this project has been pulled up on before — Council audit findings, the planner's letter, the project's own engineering constraints. The point is to catch the recurring stuff before the set goes out, not five days after Council sends it back.
@@ -82,7 +84,7 @@ ${args.ownerEmail ? `Reply to ${args.ownerEmail} with any questions.\n\n` : ''}T
 <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 620px; margin: 0 auto; padding: 24px; color: #1f2937; line-height: 1.55;">
   <p style="margin: 0 0 16px;">${greeting}</p>
 
-  <p style="margin: 0 0 16px;"><strong>${escapeHtml(args.ownerEmail ?? 'The project team')}${escapeHtml(ownerFrom)}</strong> has set up a pre-submission triage check for this project. This email gives you everything you need; no account, no portal.</p>
+  <p style="margin: 0 0 16px;">${escapeHtml(operatorLine)} This email gives you everything you need; no account, no portal.</p>
 
   <h3 style="margin: 24px 0 8px; font-size: 14px; letter-spacing: 0.04em; text-transform: uppercase; color: #6b7280;">What this is</h3>
   <p style="margin: 0 0 16px;">Preflight runs your latest drawing set against the things this project has been pulled up on before — Council audit findings, the planner's letter, the project's own engineering constraints. The point is to catch the recurring stuff before the set goes out, not five days after Council sends it back.</p>
