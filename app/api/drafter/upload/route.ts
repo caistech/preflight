@@ -73,6 +73,7 @@ export async function POST(request: NextRequest) {
       byte_size: file.size,
       page_count: extracted.page_count,
       extracted_text: extracted.text,
+      extraction_method: extracted.extraction_method,
     })
     .select('id')
     .single();
