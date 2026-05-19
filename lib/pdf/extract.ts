@@ -24,36 +24,38 @@ export interface ExtractedSet {
 }
 
 export async function extractPdf(buffer: Buffer): Promise<ExtractedSet> {
+  const diagnostics: string[] = [];
+
   // Try the positioned-text path first.
   try {
     const positioned = await extractWithPdfjs(buffer);
     if (positioned.text.length >= 100) {
       return positioned;
     }
-    // Too little text from pdfjs — fall through to pdf-parse
+    diagnostics.push(`pdfjs returned only ${positioned.text.length} chars — falling back to pdf-parse`);
   } catch (e) {
-    // pdfjs failed — fall through to pdf-parse
-    void e;
+    diagnostics.push(`pdfjs path failed: ${(e as Error).message}`);
   }
 
   // Fallback: pdf-parse for born-digital prose PDFs.
   try {
     const pdfParse = (await import('pdf-parse')).default;
     const result = await pdfParse(buffer);
+    const warnings: string[] = [...diagnostics];
+    if (!result.text || result.text.length < 50) {
+      warnings.push('Both pdfjs-positioned and pdf-parse returned very little text — likely scanned/image-only PDF; OCR path not yet wired');
+    }
     return {
       text: result.text || '',
       page_count: result.numpages || 0,
-      warnings:
-        result.text && result.text.length > 50
-          ? []
-          : ['Both pdfjs-positioned and pdf-parse returned very little text — likely scanned/image-only PDF; OCR path not yet wired'],
+      warnings,
       extraction_method: 'pdf-parse',
     };
   } catch (e) {
     return {
       text: '',
       page_count: 0,
-      warnings: [`Extraction failed in both paths: ${(e as Error).message}`],
+      warnings: [...diagnostics, `pdf-parse also failed: ${(e as Error).message}`],
       extraction_method: 'failed',
     };
   }
@@ -66,12 +68,15 @@ interface PdfjsTextItem {
 
 async function extractWithPdfjs(buffer: Buffer): Promise<ExtractedSet> {
   // Use the legacy build — ships an ESM bundle that runs in Node serverless.
-  // We MUST point workerSrc at the worker module file (pdfjs 4.x rejects an
-  // empty string); the import.meta.resolve form gives us a stable path that
-  // works in dev + Vercel runtime.
+  // We must point workerSrc at the worker module file. The createRequire
+  // pattern is the Node-stable way to resolve a package-relative file path;
+  // import.meta.resolve() works locally but turns out flaky inside Vercel's
+  // serverless Node 20 runtime.
   const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
   if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
-    pdfjsLib.GlobalWorkerOptions.workerSrc = await import.meta.resolve(
+    const { createRequire } = await import('module');
+    const requireFn = createRequire(import.meta.url);
+    pdfjsLib.GlobalWorkerOptions.workerSrc = requireFn.resolve(
       'pdfjs-dist/legacy/build/pdf.worker.mjs'
     );
   }
