@@ -1,0 +1,217 @@
+{
+  "product": "preflight",
+  "version": "0.1.0",
+  "description": "Drafter-led pre-submission triage. Drop in a PDF, get back a one-page triage sheet against the project's accumulated knowledge.",
+  "services": [
+    {
+      "id": "supabase-url",
+      "name": "Supabase Project URL",
+      "envVar": "NEXT_PUBLIC_SUPABASE_URL",
+      "required": true,
+      "description": "Your Supabase project URL — stores projects, registers, drafter tokens.",
+      "signup": "https://supabase.com/dashboard/new",
+      "keyPage": "https://supabase.com/dashboard",
+      "instructions": [
+        "Go to supabase.com/dashboard/new",
+        "Create a project — pick the region nearest you, set a database password, name it (e.g. 'preflight')",
+        "Wait ~2 minutes for provisioning",
+        "Project Settings → API",
+        "Copy the URL — looks like https://abcxyz.supabase.co"
+      ],
+      "keyFormat": "^https://[a-z0-9]+\\.supabase\\.co/?$",
+      "costNote": "Free tier covers most use. Pro $25/mo if you scale."
+    },
+    {
+      "id": "supabase-anon",
+      "name": "Supabase Anon Key",
+      "envVar": "NEXT_PUBLIC_SUPABASE_ANON_KEY",
+      "required": true,
+      "description": "Public anon key for client-side Supabase calls.",
+      "keyPage": "https://supabase.com/dashboard",
+      "instructions": [
+        "Same Supabase project — Settings → API",
+        "Copy the 'anon' / 'public' key (long JWT starting with 'eyJ...')"
+      ],
+      "keyFormat": "^eyJ[A-Za-z0-9_.-]+$",
+      "costNote": "Included."
+    },
+    {
+      "id": "supabase-service",
+      "name": "Supabase Service Role Key",
+      "envVar": "SUPABASE_SERVICE_ROLE_KEY",
+      "required": true,
+      "description": "Server-side admin key — bypasses RLS. Keep secret.",
+      "keyPage": "https://supabase.com/dashboard",
+      "instructions": [
+        "Same Supabase project — Settings → API → 'service_role' key (click 'Reveal')",
+        "Copy — another long JWT. Never expose to client-side code or commit to git."
+      ],
+      "keyFormat": "^eyJ[A-Za-z0-9_.-]+$",
+      "costNote": "Included."
+    },
+    {
+      "id": "anthropic",
+      "name": "Anthropic",
+      "envVar": "ANTHROPIC_API_KEY",
+      "exclusiveGroup": "llm",
+      "required": true,
+      "description": "Claude API — drives the manual-check LLM rows in the register (Sonnet) and ambiguity classification (Haiku).",
+      "signup": "https://console.anthropic.com/signup",
+      "keyPage": "https://console.anthropic.com/settings/keys",
+      "instructions": [
+        "Sign up or log in to Anthropic Console",
+        "Settings → API Keys → Create Key (e.g. 'preflight-prod')",
+        "Copy — starts with sk-ant-"
+      ],
+      "keyFormat": "^sk-ant-[A-Za-z0-9_-]+$",
+      "costNote": "Pay-as-you-go. Most projects run < $5/mo at moderate usage."
+    },
+    {
+      "id": "openrouter",
+      "name": "OpenRouter",
+      "envVar": "OPENROUTER_API_KEY",
+      "exclusiveGroup": "llm",
+      "required": false,
+      "description": "Alternative to direct Anthropic — single key for multiple providers, consolidated billing.",
+      "signup": "https://openrouter.ai/signup",
+      "keyPage": "https://openrouter.ai/keys",
+      "instructions": [
+        "Sign up at openrouter.ai",
+        "Add credits (~$10 minimum)",
+        "Keys → Create Key — starts with sk-or-"
+      ],
+      "keyFormat": "^sk-or-[A-Za-z0-9_-]+$",
+      "costNote": "Per-token cost + ~5% OpenRouter markup."
+    },
+    {
+      "id": "openai",
+      "name": "OpenAI",
+      "envVar": "OPENAI_API_KEY",
+      "required": true,
+      "description": "Embeddings for the project KB (text-embedding-3-small).",
+      "signup": "https://platform.openai.com/signup",
+      "keyPage": "https://platform.openai.com/api-keys",
+      "instructions": [
+        "Sign up at OpenAI",
+        "API Keys → Create new secret key — starts with sk-"
+      ],
+      "keyFormat": "^sk-[A-Za-z0-9_-]+$",
+      "costNote": "Embeddings are cheap (~$0.02 per million tokens). Budget < $1/mo for moderate KBs."
+    },
+    {
+      "id": "resend",
+      "name": "Resend",
+      "envVar": "RESEND_API_KEY",
+      "required": true,
+      "description": "Outbound notifications (drafter-link emails, daily summary) + inbound webhook for project correspondence ingestion.",
+      "signup": "https://resend.com/signup",
+      "keyPage": "https://resend.com/api-keys",
+      "instructions": [
+        "Sign up at resend.com and verify a sending domain",
+        "API Keys → Create API Key — starts with re_"
+      ],
+      "keyFormat": "^re_[A-Za-z0-9_]+$",
+      "costNote": "Free tier 3,000 emails/month."
+    },
+    {
+      "id": "resend-from",
+      "name": "Resend From Address",
+      "envVar": "RESEND_FROM_EMAIL",
+      "required": true,
+      "description": "Verified sender (e.g. noreply@yourdomain.com).",
+      "costNote": "Free."
+    },
+    {
+      "id": "resend-inbound",
+      "name": "Resend Inbound Webhook Secret",
+      "envVar": "RESEND_INBOUND_SECRET",
+      "required": false,
+      "description": "Shared secret for the inbound-email webhook (parses planner / engineer / Council correspondence into the project KB).",
+      "autoGenerate": "random-32",
+      "costNote": "Auto-generated."
+    },
+    {
+      "id": "google-client-id",
+      "name": "Google OAuth Client ID",
+      "envVar": "GOOGLE_OAUTH_CLIENT_ID",
+      "required": false,
+      "description": "Google Drive integration — pull project source documents directly from a project Drive folder.",
+      "signup": "https://console.cloud.google.com/apis/credentials",
+      "keyPage": "https://console.cloud.google.com/apis/credentials",
+      "instructions": [
+        "Google Cloud Console → APIs & Services → Credentials → Create OAuth client ID",
+        "Application type: Web application",
+        "Authorised redirect URI: https://<your-deploy-url>/api/drive/oauth/callback",
+        "Copy the Client ID"
+      ],
+      "costNote": "Free."
+    },
+    {
+      "id": "google-client-secret",
+      "name": "Google OAuth Client Secret",
+      "envVar": "GOOGLE_OAUTH_CLIENT_SECRET",
+      "required": false,
+      "description": "Companion secret to the Google OAuth Client ID.",
+      "instructions": [
+        "Same Google Cloud Console credential — copy the Client Secret"
+      ],
+      "costNote": "Free."
+    },
+    {
+      "id": "google-redirect",
+      "name": "Google OAuth Redirect URI",
+      "envVar": "GOOGLE_OAUTH_REDIRECT_URI",
+      "required": false,
+      "description": "Must match what you registered in Google Cloud Console.",
+      "instructions": [
+        "For local dev: http://localhost:3000/api/drive/oauth/callback",
+        "For deployed: https://<your-deploy-url>/api/drive/oauth/callback"
+      ],
+      "costNote": "Free."
+    },
+    {
+      "id": "elevenlabs",
+      "name": "ElevenLabs",
+      "envVar": "ELEVENLABS_API_KEY",
+      "required": false,
+      "description": "Voice agent per VOICE AI STANDARD RULE — agent provisioning deferred to follow-up turn. Leave blank for v0.",
+      "signup": "https://elevenlabs.io/sign-up",
+      "keyPage": "https://elevenlabs.io/app/settings/api-keys",
+      "costNote": "Pay-as-you-go. Budget $5-20/mo depending on voice usage."
+    },
+    {
+      "id": "elevenlabs-agent",
+      "name": "ElevenLabs Agent ID",
+      "envVar": "ELEVENLABS_AGENT_ID",
+      "required": false,
+      "description": "Auto-created on first run (deferred). Leave blank for v0.",
+      "costNote": "Free."
+    },
+    {
+      "id": "cron-secret",
+      "name": "Cron Secret",
+      "envVar": "CRON_SECRET",
+      "required": true,
+      "description": "Random string protecting /api/cron/* endpoints from public invocation.",
+      "autoGenerate": "random-32",
+      "costNote": "Auto-generated."
+    },
+    {
+      "id": "drafter-token-secret",
+      "name": "Drafter Token Secret",
+      "envVar": "DRAFTER_TOKEN_SECRET",
+      "required": true,
+      "description": "HMAC secret for signing per-project drafter URLs (short-lived). Rotating this revokes every outstanding drafter link.",
+      "autoGenerate": "random-32",
+      "costNote": "Auto-generated."
+    },
+    {
+      "id": "app-url",
+      "name": "App URL",
+      "envVar": "NEXT_PUBLIC_APP_URL",
+      "required": true,
+      "description": "Where this Preflight instance is deployed (e.g. https://preflight.vercel.app).",
+      "costNote": "Free."
+    }
+  ]
+}

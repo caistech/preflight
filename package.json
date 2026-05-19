@@ -1,0 +1,40 @@
+{
+  "name": "preflight",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Drafter-led pre-submission triage for DA drawing sets. Drafter drops a PDF, gets back a one-page triage sheet against the project's accumulated knowledge before the set leaves their desk. Built on the premise that every recurring rejection is a register row, never a re-discovery.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit",
+    "setup": "node scripts/setup-byok.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.71.2",
+    "@supabase/ssr": "^0.8.0",
+    "@supabase/supabase-js": "^2.89.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "googleapis": "^144.0.0",
+    "lucide-react": "^0.562.0",
+    "next": "^14.2.35",
+    "openai": "^4.77.0",
+    "pdf-parse": "^1.1.1",
+    "react": "^18",
+    "react-dom": "^18",
+    "tailwind-merge": "^3.4.0",
+    "tailwindcss": "^3.4.17",
+    "tailwindcss-animate": "^1.0.7"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/pdf-parse": "^1.1.4",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
+    "autoprefixer": "^10.4.23",
+    "postcss": "^8.5.6",
+    "typescript": "^5"
+  }
+}
