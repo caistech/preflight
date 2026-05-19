@@ -2,6 +2,7 @@ import { createServiceClient } from '@/lib/supabase/service';
 import { DrafterLinkPanel } from './drafter-link-panel';
 import { SourcesPanel } from './sources-panel';
 import { AddressEditor } from './address-editor';
+import { AddRuleForm } from './add-rule-form';
 
 export const dynamic = 'force-dynamic';
 
@@ -54,6 +55,7 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
     { data: runs },
     { data: kbDocs },
     { data: driveConn },
+    { data: inbound },
   ] = await Promise.all([
     db.from('projects').select('*').eq('id', id).single(),
     db.from('project_facts').select('key, value, source, notes').eq('project_id', id).order('key'),
@@ -86,6 +88,12 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
       .select('id, paused')
       .eq('project_id', id)
       .maybeSingle(),
+    db
+      .from('inbound_emails')
+      .select('id, from_address, subject, parsed, kb_document_id, created_at')
+      .eq('project_id', id)
+      .order('created_at', { ascending: false })
+      .limit(20),
   ]);
 
   if (!project) {
@@ -109,6 +117,14 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
   const inboundEmailAlias = `${project.slug}@inbound.${
     (process.env.NEXT_PUBLIC_APP_URL ?? '').replace(/^https?:\/\//, '').replace(/\/.*$/, '') || 'preflight.app'
   }`;
+  const recentInbound = (inbound ?? []) as Array<{
+    id: string;
+    from_address: string | null;
+    subject: string | null;
+    parsed: boolean;
+    kb_document_id: string | null;
+    created_at: string;
+  }>;
 
   return (
     <div className="mx-auto max-w-5xl px-6 py-10">
@@ -208,17 +224,13 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
         inboundEmailAlias={inboundEmailAlias}
         driveConnected={driveConnected}
         existingDocs={existingKbDocs}
+        recentInbound={recentInbound}
       />
 
       {/* Requirements register */}
       <section className="mt-10">
         <h2 className="mb-3 text-lg font-semibold">Requirements register</h2>
-        <p className="mb-4 max-w-2xl text-sm text-gray-400">
-          Every checkable assertion this project will run drawing sets against.
-          Each row carries its own source attribution — the register is the
-          institutional memory of past rejections, never re-invented from
-          scratch.
-        </p>
+        <AddRuleForm projectId={id} kbDocs={existingKbDocs} />
         {registerRows.length === 0 ? (
           <div className="rounded-2xl border border-gray-800 bg-gray-900/30 p-6 text-sm text-gray-400">
             No register rows yet.

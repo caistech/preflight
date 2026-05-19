@@ -1,19 +1,21 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { ingestKbDocument } from '@/lib/kb/ingest';
 
 /**
- * Inbound email handler — v0 stub.
+ * Inbound email handler — auto-promotes to KB.
  *
- * Real implementation:
- *   1. Verifies the inbound webhook shared secret (Resend signs payloads via svix).
- *   2. Maps the inbound to a project via the "to" address — convention is
- *      `<project-slug>@inbound.<your-domain>` (e.g. lot-442-seafields@inbound.preflight.app).
- *   3. Stores raw payload in inbound_emails.
- *   4. Classifies the sender (planner / council / engineer / drafter / owner) via simple
- *      pattern + LLM fallback.
- *   5. Writes a kb_documents row with party tag + body text, chunks + embeds for retrieval.
- *   6. Marks inbound_emails.parsed=true.
+ *  1. Look up the project by the inbound-alias local-part (the bit before @).
+ *     Convention: <project-slug>@inbound.<your-domain>.
+ *  2. Persist the raw payload + metadata to inbound_emails (audit trail).
+ *  3. If we matched a project AND the email has a usable text body, ingest it
+ *     as a kb_documents row (kind='inbound-email') and chunk+embed via the
+ *     standard KB pipeline so manual-check rules with use_kb_retrieval: true
+ *     immediately get the new context.
+ *  4. Mark inbound_emails.parsed=true and link kb_document_id.
  *
- * v0: persists the raw payload only. Classification + KB write is deferred.
+ * Operator workflow this enables: forward correspondence to the project's
+ * inbound alias → it shows up in Sources → no CLI, no script, no scratch
+ * SQL editing. Same surface as Drive when that lands.
  */
 
 export interface InboundEmailPayload {
@@ -26,34 +28,94 @@ export interface InboundEmailPayload {
   raw?: unknown;
 }
 
+export interface InboundResult {
+  stored: boolean;
+  project_id: string | null;
+  kb_document_id: string | null;
+  reason?: string;
+}
+
 export async function persistInboundEmail(
   db: SupabaseClient,
   payload: InboundEmailPayload
-): Promise<{ stored: boolean; project_id: string | null }> {
-  // Best-effort project lookup by inbound address: anything before '@' is a candidate slug
+): Promise<InboundResult> {
+  // 1. Resolve project by inbound-alias local-part
   let projectId: string | null = null;
   if (payload.to) {
-    const local = payload.to.split('@')[0]?.toLowerCase();
+    const local = payload.to.split('@')[0]?.toLowerCase().trim();
     if (local) {
-      const { data: p } = await db.from('projects').select('id').eq('slug', local).single();
+      const { data: p } = await db.from('projects').select('id').eq('slug', local).maybeSingle();
       if (p) projectId = p.id;
     }
   }
 
-  await db.from('inbound_emails').upsert(
-    {
-      project_id: projectId,
-      message_id: payload.message_id,
-      from_address: payload.from ?? null,
-      to_address: payload.to ?? null,
-      subject: payload.subject ?? null,
-      body_text: payload.text ?? null,
-      body_html: payload.html ?? null,
-      raw_payload: payload.raw ?? null,
-      parsed: false,
-    },
-    { onConflict: 'message_id' }
-  );
+  // 2. Always persist the raw inbound row (audit trail, even if project unknown)
+  const { data: inboundRow } = await db
+    .from('inbound_emails')
+    .upsert(
+      {
+        project_id: projectId,
+        message_id: payload.message_id,
+        from_address: payload.from ?? null,
+        to_address: payload.to ?? null,
+        subject: payload.subject ?? null,
+        body_text: payload.text ?? null,
+        body_html: payload.html ?? null,
+        raw_payload: payload.raw ?? null,
+        parsed: false,
+      },
+      { onConflict: 'message_id' }
+    )
+    .select('id')
+    .single();
 
-  return { stored: true, project_id: projectId };
+  // 3. Auto-promote to KB if we matched a project and have a body
+  if (!projectId) {
+    return { stored: true, project_id: null, kb_document_id: null, reason: 'no project matched the inbound alias' };
+  }
+  const body = (payload.text ?? '').trim() || stripHtml(payload.html ?? '');
+  if (body.length < 30) {
+    return { stored: true, project_id: projectId, kb_document_id: null, reason: 'body too short to ingest' };
+  }
+
+  try {
+    const title = (payload.subject ?? '').trim() || `Email from ${payload.from ?? 'unknown'}`;
+    const result = await ingestKbDocument(db, {
+      projectId,
+      title,
+      sourceKind: 'inbound-email',
+      sourceRef: payload.from ?? null,
+      content: body,
+    });
+
+    // 4. Mark parsed + link the KB doc
+    if (inboundRow) {
+      await db
+        .from('inbound_emails')
+        .update({ parsed: true, kb_document_id: result.document_id })
+        .eq('id', inboundRow.id);
+    }
+
+    return { stored: true, project_id: projectId, kb_document_id: result.document_id };
+  } catch (e) {
+    return {
+      stored: true,
+      project_id: projectId,
+      kb_document_id: null,
+      reason: `KB ingest failed: ${(e as Error).message}`,
+    };
+  }
+}
+
+function stripHtml(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/\s+/g, ' ')
+    .trim();
 }

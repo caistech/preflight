@@ -10,6 +10,15 @@ interface KbDocument {
   created_at: string;
 }
 
+interface InboundEmail {
+  id: string;
+  from_address: string | null;
+  subject: string | null;
+  parsed: boolean;
+  kb_document_id: string | null;
+  created_at: string;
+}
+
 const SOURCE_KIND_OPTIONS = [
   { value: 'planner-letter', label: 'Planner letter' },
   { value: 'council-audit', label: 'Council audit / feedback' },
@@ -22,11 +31,13 @@ export function SourcesPanel({
   inboundEmailAlias,
   driveConnected,
   existingDocs,
+  recentInbound = [],
 }: {
   projectId: string;
   inboundEmailAlias: string;
   driveConnected: boolean;
   existingDocs: KbDocument[];
+  recentInbound?: InboundEmail[];
 }) {
   const [activeTab, setActiveTab] = useState<'file' | 'url' | 'text'>('file');
 
@@ -40,13 +51,20 @@ export function SourcesPanel({
         a drafter would have to learn through hand-explanation goes in here.
       </p>
 
-      {/* Channels — drive + inbound email */}
+      {/* Channels — drive + inbound email (passive sources, no admin action per item) */}
       <div className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div className="rounded-2xl border border-gray-800 bg-gray-900/30 p-4">
-          <div className="mb-1 text-xs uppercase tracking-wide text-gray-500">Inbound email</div>
+          <div className="mb-1 flex items-center justify-between">
+            <div className="text-xs uppercase tracking-wide text-gray-500">Inbound email</div>
+            {recentInbound.length > 0 && (
+              <div className="text-xs text-emerald-400">
+                {recentInbound.filter((e) => e.parsed).length}/{recentInbound.length} ingested
+              </div>
+            )}
+          </div>
           <div className="mb-2 font-mono text-xs break-all text-emerald-300">{inboundEmailAlias}</div>
           <div className="text-xs text-gray-400">
-            Forward (or BCC) planner / Council / engineer correspondence here. Each email persists as a KB document.
+            Forward (or BCC) planner / Council / engineer correspondence here. Each email is auto-ingested into the KB — no further action needed.
           </div>
         </div>
         <div className="rounded-2xl border border-gray-800 bg-gray-900/30 p-4">
@@ -66,6 +84,47 @@ export function SourcesPanel({
           )}
         </div>
       </div>
+
+      {/* Recent inbound — auto-promoted to KB */}
+      {recentInbound.length > 0 && (
+        <div className="mb-6">
+          <div className="mb-2 text-xs uppercase tracking-wide text-gray-500">
+            Recent inbound emails ({recentInbound.length})
+          </div>
+          <div className="overflow-hidden rounded-2xl border border-gray-800">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-900/60 text-left text-xs uppercase tracking-wide text-gray-500">
+                <tr>
+                  <th className="px-3 py-2">From</th>
+                  <th className="px-3 py-2">Subject</th>
+                  <th className="px-3 py-2">Received</th>
+                  <th className="px-3 py-2">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-800">
+                {recentInbound.map((e) => (
+                  <tr key={e.id} className="text-gray-300">
+                    <td className="px-3 py-2 truncate max-w-[180px]">{e.from_address ?? '—'}</td>
+                    <td className="px-3 py-2 truncate max-w-[260px]">{e.subject ?? '(no subject)'}</td>
+                    <td className="px-3 py-2 text-xs text-gray-500">{new Date(e.created_at).toLocaleString('en-AU')}</td>
+                    <td className="px-3 py-2">
+                      {e.parsed ? (
+                        <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs text-emerald-300">
+                          in KB
+                        </span>
+                      ) : (
+                        <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-xs text-amber-300">
+                          captured
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Tabbed add-source form */}
       <div className="rounded-2xl border border-gray-800 bg-gray-900/40">
