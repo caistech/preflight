@@ -102,14 +102,39 @@ export async function POST(request: NextRequest) {
     headers['svix-id'] ??
     `inbound-${Date.now()}`;
 
+  // Resend's inbound webhook payload deliberately omits the body — we have to
+  // fetch it via GET /emails/inbound/{email_id} to get text/html. Webhooks
+  // stay small + cheap; full content lives behind a second API call.
+  let text = data.text;
+  let html = data.html;
+  if ((!text && !html) && data.email_id) {
+    const apiKey = process.env.RESEND_API_KEY;
+    if (apiKey) {
+      try {
+        const r = await fetch(`https://api.resend.com/emails/inbound/${data.email_id}`, {
+          headers: { Authorization: `Bearer ${apiKey}` },
+          signal: AbortSignal.timeout(15000),
+        });
+        if (r.ok) {
+          const full = (await r.json()) as { text?: string; html?: string };
+          text = full.text ?? text;
+          html = full.html ?? html;
+        }
+      } catch {
+        // body fetch failed — fall through; persist row with empty body so we
+        // at least audit the receipt
+      }
+    }
+  }
+
   const db = createServiceClient();
   const result = await persistInboundEmail(db, {
     message_id: messageId,
     from: fromEmail,
     to: toEmail,
     subject: data.subject,
-    text: data.text,
-    html: data.html,
+    text,
+    html,
     raw: envelope,
   });
 
