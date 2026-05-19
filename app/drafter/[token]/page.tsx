@@ -14,6 +14,10 @@ export default async function DrafterPage({ params }: Props) {
 
   let projectName = '';
   let projectId = '';
+  let projectCouncil: string | null = null;
+  let projectOwnerLabel: string | null = null;
+  let projectUploadInstructions: string | null = null;
+  let projectAddress: string | null = null;
   let drafterName: string | null = null;
   let tokenInvalid = false;
   let tokenInvalidReason = '';
@@ -22,7 +26,7 @@ export default async function DrafterPage({ params }: Props) {
     const hash = hashDrafterToken(token);
     const { data: t } = await db
       .from('drafter_tokens')
-      .select('id, project_id, drafter_name, expires_at, revoked_at, projects(name)')
+      .select('id, project_id, drafter_name, expires_at, revoked_at, projects(name, council, owner_label, upload_instructions)')
       .eq('token_hash', hash)
       .single();
 
@@ -38,8 +42,24 @@ export default async function DrafterPage({ params }: Props) {
     } else {
       projectId = t.project_id;
       drafterName = t.drafter_name;
-      // @ts-expect-error joined relation
-      projectName = t.projects?.name ?? '';
+      const p = (t.projects ?? {}) as {
+        name?: string;
+        council?: string | null;
+        owner_label?: string | null;
+        upload_instructions?: string | null;
+      };
+      projectName = p.name ?? '';
+      projectCouncil = p.council ?? null;
+      projectOwnerLabel = p.owner_label ?? null;
+      projectUploadInstructions = p.upload_instructions ?? null;
+
+      const { data: addrFact } = await db
+        .from('project_facts')
+        .select('value')
+        .eq('project_id', projectId)
+        .eq('key', 'address_summary')
+        .single();
+      projectAddress = addrFact?.value ?? null;
     }
   } catch (e) {
     tokenInvalid = true;
@@ -60,6 +80,9 @@ export default async function DrafterPage({ params }: Props) {
     );
   }
 
+  const uploadGuidance =
+    projectUploadInstructions ?? 'Upload your latest revision of the drawing set as a PDF.';
+
   return (
     <main className="min-h-screen bg-gray-950 text-white">
       <div className="mx-auto max-w-3xl px-6 py-12">
@@ -67,22 +90,115 @@ export default async function DrafterPage({ params }: Props) {
         <h1 className="mb-2 text-3xl font-bold">
           Pre-submission check{drafterName ? ` — ${drafterName}` : ''}
         </h1>
-        <p className="mb-8 max-w-2xl text-sm text-gray-400">
-          You&apos;re working on <strong className="text-gray-200">{projectName}</strong>. Drop the latest set
-          and we&apos;ll run it against the project&apos;s requirements register before it
-          leaves your desk. No account, no portal — the result is yours to act
-          on; you decide what (if anything) you share back.
+
+        {/* Explanatory header per the UI EXPLANATORY HEADER rule */}
+        <p className="mb-6 max-w-2xl text-sm text-gray-400">
+          Drop your latest <strong className="text-gray-200">{projectName}</strong> drawing set in
+          and you&apos;ll get back a one-page sheet listing anything that matches a known
+          recurring issue on this project — before the set goes to Council.
+          No account, no portal; the result is yours to act on.
         </p>
 
+        {/* Project details panel */}
+        <section className="mb-6 rounded-2xl border border-gray-800 bg-gray-900/30 p-5">
+          <div className="mb-3 text-xs uppercase tracking-wide text-gray-500">Project details</div>
+          <dl className="grid grid-cols-1 gap-y-1 text-sm sm:grid-cols-[140px,1fr]">
+            <dt className="text-gray-500">Project</dt>
+            <dd className="text-gray-200">{projectName}</dd>
+            {projectAddress && (<>
+              <dt className="text-gray-500">Address</dt>
+              <dd className="text-gray-200">{projectAddress}</dd>
+            </>)}
+            {projectCouncil && (<>
+              <dt className="text-gray-500">Council</dt>
+              <dd className="text-gray-200">{projectCouncil}</dd>
+            </>)}
+            {projectOwnerLabel && (<>
+              <dt className="text-gray-500">Project owner</dt>
+              <dd className="text-gray-200">{projectOwnerLabel}</dd>
+            </>)}
+          </dl>
+        </section>
+
+        {/* What to upload */}
+        <section className="mb-6 rounded-2xl border border-gray-800 bg-gray-900/30 p-5">
+          <div className="mb-2 text-xs uppercase tracking-wide text-gray-500">What to upload</div>
+          <p className="text-sm text-gray-300">{uploadGuidance}</p>
+        </section>
+
+        {/* Upload widget */}
         <DrafterUpload token={token} projectId={projectId} />
 
+        {/* How it works */}
+        <section className="mt-10 rounded-2xl border border-gray-800 bg-gray-900/30 p-5 text-sm text-gray-300">
+          <div className="mb-3 text-xs uppercase tracking-wide text-gray-500">How it works</div>
+          <ol className="list-decimal space-y-2 pl-5">
+            <li>
+              <strong>Deterministic checks</strong> fire on text-based rules — e.g.{' '}
+              <em className="text-gray-400">
+                &quot;if the legend lists sub-floor vents but the project uses
+                slab-on-biscuit footings, flag it.&quot;
+              </em>{' '}
+              Clean pass or fail with a sheet reference.
+            </li>
+            <li>
+              <strong>Manual-check rules</strong> use an LLM to scan the relevant
+              excerpts and answer narrow yes/no/unsure questions. The LLM is
+              allowed (and expected) to answer{' '}
+              <span className="text-amber-400">unsure</span>. It never invents
+              specifics like street names, dimensions, or citations — those
+              always come back for human judgment.
+            </li>
+          </ol>
+        </section>
+
+        {/* What you'll get */}
+        <section className="mt-6 rounded-2xl border border-gray-800 bg-gray-900/30 p-5 text-sm text-gray-300">
+          <div className="mb-3 text-xs uppercase tracking-wide text-gray-500">What you&apos;ll get</div>
+          <ul className="space-y-2">
+            <li>
+              <span className="text-red-400">🔴 Hard fails</span> — issues that
+              will trigger a Council query. Fix before submission. Sheet reference
+              is included.
+            </li>
+            <li>
+              <span className="text-amber-400">🟡 Needs eyes</span> — the LLM was
+              unsure, or it&apos;s a judgment call. Read these and decide; don&apos;t
+              just trust the tool.
+            </li>
+            <li>
+              <span className="text-emerald-400">✅ Confirmed OK</span> — short
+              list of things the tool can positively confirm. Builds trust in the
+              rest of the result.
+            </li>
+          </ul>
+        </section>
+
+        {/* What to do with it */}
+        <section className="mt-6 rounded-2xl border border-gray-800 bg-gray-900/30 p-5 text-sm text-gray-300">
+          <div className="mb-3 text-xs uppercase tracking-wide text-gray-500">What to do with the results</div>
+          <ul className="list-disc space-y-2 pl-5">
+            <li>Fix the hard fails before sending the set on.</li>
+            <li>For <em className="text-amber-400">needs eyes</em>, use your own judgment — the tool&apos;s prompting you, not gating you.</li>
+            <li>
+              Nothing is shared with {projectOwnerLabel ?? 'the project owner'} unless
+              <strong className="text-gray-200"> you</strong> choose to share the result. The output is yours.
+            </li>
+            <li>
+              If a row flags something you know is fine, or the tool missed
+              something it should have caught — flag it back to the project owner.
+              Those gaps are how the register gets smarter for next time.
+            </li>
+          </ul>
+        </section>
+
+        {/* Honest limits — kept at the bottom */}
         <div className="mt-10 rounded-2xl border border-gray-800 bg-gray-900/30 p-4 text-xs text-gray-500">
           <div className="mb-1 font-semibold text-gray-400">Honest limits</div>
-          Preflight catches <strong>known</strong> error types only — every
-          recurring rejection the project has logged. A novel error passes
-          straight through. It is a regression check, not a substitute for
-          human review. Items marked <span className="text-amber-400">needs eyes</span> are
-          prompts for a human (you), not findings.
+          Preflight catches <strong>known</strong> error types only — every recurring rejection the
+          project has logged. A novel error passes straight through. It is a
+          regression check, not a substitute for human review. Items marked{' '}
+          <span className="text-amber-400">needs eyes</span> are prompts for a human (you), not findings.
         </div>
       </div>
     </main>

@@ -22,20 +22,27 @@ export function DrafterLinkPanel({
   existingTokens: DrafterToken[];
 }) {
   const [drafterName, setDrafterName] = useState('');
+  const [drafterEmail, setDrafterEmail] = useState('');
   const [days, setDays] = useState(14);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [newLink, setNewLink] = useState<string | null>(null);
+  const [emailStatus, setEmailStatus] = useState<{ sent: boolean; error: string | null } | null>(null);
 
   const onCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     setBusy(true);
     setError(null);
     setNewLink(null);
+    setEmailStatus(null);
     const r = await fetch(`/api/projects/${projectId}/drafter-link`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ drafter_name: drafterName || null, days }),
+      body: JSON.stringify({
+        drafter_name: drafterName || null,
+        drafter_email: drafterEmail || null,
+        days,
+      }),
     });
     const j = await r.json().catch(() => ({}));
     setBusy(false);
@@ -44,7 +51,11 @@ export function DrafterLinkPanel({
       return;
     }
     setNewLink(j.url);
+    if (drafterEmail) {
+      setEmailStatus({ sent: !!j.email_sent, error: j.email_error ?? null });
+    }
     setDrafterName('');
+    setDrafterEmail('');
   };
 
   return (
@@ -58,14 +69,24 @@ export function DrafterLinkPanel({
       </p>
 
       <div className="rounded-2xl border border-gray-800 bg-gray-900/40 p-6">
-        <form onSubmit={onCreate} className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-          <div>
+        <form onSubmit={onCreate} className="grid grid-cols-1 gap-4 sm:grid-cols-4">
+          <div className="sm:col-span-1">
             <label className="mb-1 block text-xs text-gray-400">Drafter name (optional)</label>
             <input
               type="text"
               value={drafterName}
               onChange={(e) => setDrafterName(e.target.value)}
-              placeholder="e.g. ModularWA — Anna"
+              placeholder="e.g. Fiona"
+              className="w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm outline-none focus:border-emerald-500"
+            />
+          </div>
+          <div className="sm:col-span-2">
+            <label className="mb-1 block text-xs text-gray-400">Drafter email (optional — we'll email the link + briefing)</label>
+            <input
+              type="email"
+              value={drafterEmail}
+              onChange={(e) => setDrafterEmail(e.target.value)}
+              placeholder="fiona@modularwa.com.au"
               className="w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm outline-none focus:border-emerald-500"
             />
           </div>
@@ -80,13 +101,13 @@ export function DrafterLinkPanel({
               className="w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm outline-none focus:border-emerald-500"
             />
           </div>
-          <div className="flex items-end">
+          <div className="sm:col-span-4 flex">
             <button
               type="submit"
               disabled={busy}
               className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-medium text-gray-950 transition-colors hover:bg-emerald-400 disabled:opacity-50"
             >
-              {busy ? 'Generating…' : 'Generate new link'}
+              {busy ? 'Working…' : drafterEmail ? 'Generate link & email drafter' : 'Generate new link'}
             </button>
           </div>
         </form>
@@ -100,7 +121,11 @@ export function DrafterLinkPanel({
         {newLink && (
           <div className="mt-4 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3">
             <div className="mb-1 text-xs text-emerald-300">
-              Share this URL with the drafter — shown once, not stored in clear text:
+              {emailStatus?.sent
+                ? 'Sent. The drafter now has the link + briefing in their inbox. Same URL below if you want to share it elsewhere:'
+                : emailStatus && !emailStatus.sent
+                  ? `Link created but the email didn't send (${emailStatus.error ?? 'unknown error'}). Share the URL manually:`
+                  : 'Share this URL with the drafter — shown once, not stored in clear text:'}
             </div>
             <code className="block break-all rounded bg-gray-950 px-3 py-2 font-mono text-xs text-emerald-200">
               {newLink}
