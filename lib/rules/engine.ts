@@ -99,11 +99,14 @@ function evalLogicRule(spec: LogicRuleSpec, input: CheckEvaluationInput): CheckE
       const expected = Number((spec.params?.expected_count as number) ?? 0);
       if (!expected) return { outcome: 'error', message: 'unit_numbering_set requires expected_count' };
 
-      // Only relevant on a sheet that actually shows a unit-numbered set —
-      // i.e. a letterbox elevation. Without page-scoping, this rule false-fires
-      // on title-block "UNIT 1" references that appear on every drawing sheet.
+      // Gate to pages that explicitly carry a letterbox ELEVATION (not just
+      // a "letterbox" mention in a site-plan legend). Without this, the rule
+      // sees site-plan unit labels + every title-block "UNIT 1" reference
+      // and produces meaningless duplicate counts.
       const pages = splitByPage(input.extractedText);
-      const letterboxPages = pages.filter((p) => /\b(letterbox|letter\s*box|lb\s*elev)/i.test(p));
+      const letterboxPages = pages.filter((p) =>
+        /\b(letterbox|letter\s*box|\blb)\s*(elev|elevation)/i.test(p)
+      );
       if (letterboxPages.length === 0) {
         return {
           outcome: 'not-applicable',
@@ -111,31 +114,47 @@ function evalLogicRule(spec: LogicRuleSpec, input: CheckEvaluationInput): CheckE
         };
       }
 
-      // Extract "UNIT \d+" labels from the letterbox page(s) only — count occurrences so duplicates surface.
-      const re = /\bunit\s+(\d{1,3})\b/gi;
-      const found = new Set<number>();
+      // On the letterbox page, count only unit tokens that appear on a line
+      // with ≥2 UNIT references — that's the row-of-cells pattern. Lines with
+      // a single UNIT reference are typically title-block address text like
+      // "ADDRESS: UNIT 1, LOT 442 …" which would otherwise pollute the count.
+      const unitToken = /\bunit\s+(\d{1,3})\b/gi;
       const counts: Record<number, number> = {};
-      let m: RegExpExecArray | null;
+      const cellRowLines: string[] = [];
+
       for (const page of letterboxPages) {
-        while ((m = re.exec(page)) !== null) {
-          const n = parseInt(m[1], 10);
-          if (n >= 1 && n <= 999) {
-            found.add(n);
-            counts[n] = (counts[n] ?? 0) + 1;
+        const lines = page.split('\n');
+        for (const line of lines) {
+          const matches = [...line.matchAll(unitToken)];
+          if (matches.length < 2) continue;
+          cellRowLines.push(line);
+          for (const m of matches) {
+            const n = parseInt(m[1], 10);
+            if (n >= 1 && n <= 999) counts[n] = (counts[n] ?? 0) + 1;
           }
         }
       }
 
+      // If we never found a cell-row line, the letterbox is present but not
+      // text-extractable — punt rather than false-pass.
+      if (cellRowLines.length === 0) {
+        return {
+          outcome: 'unsure',
+          message: 'Letterbox elevation detected but no row of unit labels was extractable — needs human eyes on the sheet.',
+        };
+      }
+
+      const found = new Set<number>(Object.keys(counts).map(Number));
       const missing: number[] = [];
       for (let i = 1; i <= expected; i++) if (!found.has(i)) missing.push(i);
-      const extra = Array.from(found).filter((n) => n > expected || n < 1);
+      const extra = [...found].filter((n) => n > expected || n < 1);
       const duplicates = Object.entries(counts).filter(([, c]) => c > 1).map(([n]) => Number(n));
 
       if (missing.length === 0 && extra.length === 0 && duplicates.length === 0) {
         return {
           outcome: 'pass',
           message: `All ${expected} units present on letterbox, none extra, none duplicated`,
-          evidence: { found: Array.from(found), counts },
+          evidence: { found: [...found], counts, cell_rows: cellRowLines },
         };
       }
       const bits: string[] = [];
@@ -145,7 +164,7 @@ function evalLogicRule(spec: LogicRuleSpec, input: CheckEvaluationInput): CheckE
       return {
         outcome: 'fail',
         message: bits.join('; '),
-        evidence: { found: Array.from(found), missing, extra, duplicates, counts },
+        evidence: { found: [...found], missing, extra, duplicates, counts, cell_rows: cellRowLines },
       };
     }
     case 'title_block_count': {
