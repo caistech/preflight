@@ -18,19 +18,47 @@ interface UploadResponse {
   not_applicable: number;
   errors: number;
   warnings: string[];
+  files?: Array<{ name: string; bytes: number; extraction_method: string; pages: number }>;
 }
 
 export function DrafterUpload({ token, projectId: _projectId }: { token: string; projectId: string }) {
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<UploadResponse | null>(null);
   const permalinkBase = `/drafter/${token}/runs`;
 
+  function onFilesPicked(picked: FileList | null) {
+    if (!picked) return;
+    const incoming = Array.from(picked).filter((f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'));
+    // De-dupe by (name + size + lastModified)
+    const key = (f: File) => `${f.name}::${f.size}::${f.lastModified}`;
+    const existing = new Set(files.map(key));
+    const merged = [...files];
+    for (const f of incoming) {
+      if (!existing.has(key(f))) {
+        merged.push(f);
+        existing.add(key(f));
+      }
+    }
+    setFiles(merged);
+    setError(null);
+  }
+
+  function removeFile(idx: number) {
+    setFiles(files.filter((_, i) => i !== idx));
+  }
+
+  function clearAll() {
+    setFiles([]);
+    setResult(null);
+    setError(null);
+  }
+
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!file) {
-      setError('Pick a PDF file first.');
+    if (files.length === 0) {
+      setError('Pick at least one PDF first.');
       return;
     }
     setBusy(true);
@@ -38,7 +66,7 @@ export function DrafterUpload({ token, projectId: _projectId }: { token: string;
     setResult(null);
 
     const form = new FormData();
-    form.append('file', file);
+    for (const f of files) form.append('file', f);
     form.append('token', token);
 
     try {
@@ -62,16 +90,51 @@ export function DrafterUpload({ token, projectId: _projectId }: { token: string;
   return (
     <div>
       <form onSubmit={onSubmit} className="rounded-2xl border border-gray-800 bg-gray-900/40 p-6">
-        <label className="mb-2 block text-sm text-gray-300">Drop your drawing-set PDF</label>
+        <label className="mb-2 block text-sm text-gray-300">
+          Drop one or more PDFs — they&apos;ll be evaluated as a combined set
+        </label>
         <input
           type="file"
           accept="application/pdf"
-          onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+          multiple
+          onChange={(e) => {
+            onFilesPicked(e.target.files);
+            // Reset the input so the same file can be re-selected after removing
+            e.target.value = '';
+          }}
           className="block w-full text-sm text-gray-300 file:mr-4 file:rounded-lg file:border file:border-gray-700 file:bg-gray-800 file:px-4 file:py-2 file:text-sm file:font-medium file:text-gray-200 hover:file:bg-gray-700"
         />
-        {file && (
-          <div className="mt-2 text-xs text-gray-500">
-            {file.name} · {(file.size / 1024 / 1024).toFixed(1)} MB
+
+        {files.length > 0 && (
+          <div className="mt-3 space-y-2">
+            <div className="flex items-center justify-between text-xs text-gray-500">
+              <span>Files to check ({files.length})</span>
+              <button
+                type="button"
+                onClick={clearAll}
+                className="text-gray-500 hover:text-red-400"
+              >
+                Clear all
+              </button>
+            </div>
+            <ul className="divide-y divide-gray-800 overflow-hidden rounded-lg border border-gray-800">
+              {files.map((f, i) => (
+                <li key={i} className="flex items-center justify-between gap-2 bg-gray-900/40 px-3 py-2 text-sm">
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-gray-200">{f.name}</div>
+                    <div className="text-xs text-gray-500">{(f.size / 1024 / 1024).toFixed(1)} MB</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => removeFile(i)}
+                    className="rounded-md border border-gray-700 px-2 py-1 text-xs text-gray-400 hover:border-red-500 hover:text-red-400"
+                    aria-label="Remove file"
+                  >
+                    Remove
+                  </button>
+                </li>
+              ))}
+            </ul>
           </div>
         )}
 
@@ -83,23 +146,44 @@ export function DrafterUpload({ token, projectId: _projectId }: { token: string;
 
         <button
           type="submit"
-          disabled={busy || !file}
+          disabled={busy || files.length === 0}
           className="mt-4 rounded-lg bg-emerald-500 px-6 py-3 text-sm font-medium text-gray-950 transition-colors hover:bg-emerald-400 disabled:opacity-50"
         >
-          {busy ? 'Running checks…' : 'Run preflight check'}
+          {busy
+            ? `Running checks on ${files.length} file${files.length === 1 ? '' : 's'}…`
+            : files.length > 1
+              ? `Run preflight check on ${files.length} files`
+              : 'Run preflight check'}
         </button>
       </form>
 
       {result && (
         <>
           <div className="mt-6 rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3 text-xs text-emerald-200">
-            This result is saved. Permanent link to come back to it later:{' '}
-            <a
-              href={`${permalinkBase}/${result.check_run_id}`}
-              className="font-mono text-emerald-300 hover:underline"
-            >
-              {permalinkBase}/{result.check_run_id}
-            </a>
+            <div className="mb-1">
+              This result is saved. Permanent link to come back to it later:{' '}
+              <a
+                href={`${permalinkBase}/${result.check_run_id}`}
+                className="font-mono text-emerald-300 hover:underline"
+              >
+                {permalinkBase}/{result.check_run_id}
+              </a>
+            </div>
+            {result.files && result.files.length > 0 && (
+              <div className="mt-2 border-t border-emerald-500/10 pt-2">
+                <div className="mb-1 text-emerald-300">Files in this run:</div>
+                <ul className="space-y-0.5">
+                  {result.files.map((f, i) => (
+                    <li key={i} className="font-mono text-emerald-200/80">
+                      • {f.name}{' '}
+                      <span className="text-emerald-200/40">
+                        ({(f.bytes / 1024 / 1024).toFixed(1)} MB · {f.pages}p · {f.extraction_method})
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
           <TriageSheet result={result} />
         </>

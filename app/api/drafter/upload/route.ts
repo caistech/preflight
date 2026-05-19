@@ -17,16 +17,29 @@ interface ResultLine {
   source: string;
 }
 
+interface FileSummary {
+  name: string;
+  bytes: number;
+  pages: number;
+  extraction_method: string;
+}
+
 export async function POST(request: NextRequest) {
   const db = createServiceClient();
 
   const form = await request.formData().catch(() => null);
   if (!form) return NextResponse.json({ error: 'Expected multipart form' }, { status: 400 });
 
-  const file = form.get('file');
   const token = form.get('token');
-  if (!(file instanceof File) || typeof token !== 'string') {
-    return NextResponse.json({ error: 'Missing file or token' }, { status: 400 });
+  if (typeof token !== 'string') {
+    return NextResponse.json({ error: 'Missing token' }, { status: 400 });
+  }
+
+  // Accept either a single 'file' or multiple 'file' fields (the same key
+  // repeated). Filter to actual File instances; tolerate any null junk.
+  const files = form.getAll('file').filter((f): f is File => f instanceof File);
+  if (files.length === 0) {
+    return NextResponse.json({ error: 'Missing file(s)' }, { status: 400 });
   }
 
   // Verify drafter token
@@ -58,22 +71,51 @@ export async function POST(request: NextRequest) {
   for (const f of factRows ?? []) facts[f.key] = f.value;
   const rows = (registerRows ?? []) as RegisterRow[];
 
-  // Extract PDF
-  const bytes = Buffer.from(await file.arrayBuffer());
-  const extracted = await extractPdf(bytes);
+  // Extract each PDF; concatenate with === FILE === separators so rules can
+  // grep for source-file context while still seeing all extracted text.
+  const fileSummaries: FileSummary[] = [];
+  const sections: string[] = [];
+  const extractionWarnings: string[] = [];
+  let totalBytes = 0;
+  let totalPages = 0;
 
-  // Persist drawing_set + check_run
+  for (const file of files) {
+    const bytes = Buffer.from(await file.arrayBuffer());
+    const extracted = await extractPdf(bytes);
+    fileSummaries.push({
+      name: file.name,
+      bytes: file.size,
+      pages: extracted.page_count,
+      extraction_method: extracted.extraction_method,
+    });
+    sections.push(`=== FILE: ${file.name} ===\n${extracted.text}`);
+    extractionWarnings.push(...extracted.warnings);
+    totalBytes += file.size;
+    totalPages += extracted.page_count;
+  }
+
+  const combinedText = sections.join('\n\n');
+  const combinedFilename =
+    files.length === 1 ? files[0].name : `${files[0].name} + ${files.length - 1} more`;
+  // Use the dominant extraction method for the row; if any used pdfjs (cad-pdf), prefer that.
+  const extractionMethodForRow = fileSummaries.some((f) => f.extraction_method === 'cad-pdf')
+    ? 'cad-pdf'
+    : fileSummaries.every((f) => f.extraction_method === 'pdf-parse')
+      ? 'pdf-parse'
+      : 'failed';
+
+  // Persist drawing_set
   const { data: ds, error: dsErr } = await db
     .from('drawing_sets')
     .insert({
       project_id: projectId,
       drafter_token_id: tokenRow.id,
       uploaded_by: tokenRow.drafter_name ?? 'drafter',
-      filename: file.name,
-      byte_size: file.size,
-      page_count: extracted.page_count,
-      extracted_text: extracted.text,
-      extraction_method: extracted.extraction_method,
+      filename: combinedFilename,
+      byte_size: totalBytes,
+      page_count: totalPages,
+      extracted_text: combinedText,
+      extraction_method: extractionMethodForRow,
     })
     .select('id')
     .single();
@@ -86,6 +128,7 @@ export async function POST(request: NextRequest) {
     .insert({
       project_id: projectId,
       drawing_set_id: ds.id,
+      drafter_token_id: tokenRow.id,
       status: 'running',
       started_at: new Date().toISOString(),
     })
@@ -106,11 +149,10 @@ export async function POST(request: NextRequest) {
     try {
       result = evaluateRow({
         row,
-        extractedText: extracted.text,
+        extractedText: combinedText,
         facts,
         projectId,
       });
-      // Hand off to LLM if it's a manual-check
       if (
         result.outcome === 'unsure' &&
         result.evidence &&
@@ -118,7 +160,7 @@ export async function POST(request: NextRequest) {
       ) {
         result = await runManualCheck(
           row.check_spec as unknown as import('@/lib/rules/types').ManualCheckSpec,
-          extracted.text,
+          combinedText,
           facts,
           projectId
         );
@@ -174,6 +216,7 @@ export async function POST(request: NextRequest) {
     confirmed_ok,
     not_applicable,
     errors,
-    warnings: extracted.warnings,
+    warnings: extractionWarnings,
+    files: fileSummaries,
   });
 }
