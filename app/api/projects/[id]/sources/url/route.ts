@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateAndGetDb } from '@/lib/supabase/auth';
 import { ingestKbDocument, fetchUrlAsText } from '@/lib/kb/ingest';
+import { resolveProjectId } from '@/lib/project-resolver';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 30;
@@ -19,11 +20,13 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const { id: projectId } = await params;
+  const { id: idOrSlug } = await params;
   const { user, db, error } = await authenticateAndGetDb(request);
   if (error || !db || !user) {
     return NextResponse.json({ error: error ?? 'Unauthorized' }, { status: 401 });
   }
+  const projectId = await resolveProjectId(db, idOrSlug);
+  if (!projectId) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
 
   const body = await request.json().catch(() => ({}));
   const url: string | null = body.url ?? null;
@@ -36,9 +39,6 @@ export async function POST(
   if (!url || !/^https?:\/\//.test(url)) {
     return NextResponse.json({ error: 'Provide a valid http(s) URL' }, { status: 400 });
   }
-
-  const { data: project } = await db.from('projects').select('id').eq('id', projectId).single();
-  if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
 
   let fetched: { title: string; content: string };
   try {

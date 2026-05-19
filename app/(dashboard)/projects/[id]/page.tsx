@@ -1,4 +1,5 @@
 import { createServiceClient } from '@/lib/supabase/service';
+import { resolveProjectId } from '@/lib/project-resolver';
 import { DrafterLinkPanel } from './drafter-link-panel';
 import { SourcesPanel } from './sources-panel';
 import { AddressEditor } from './address-editor';
@@ -44,8 +45,15 @@ interface CheckRun {
 }
 
 export default async function ProjectDetailPage({ params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
+  const { id: idOrSlug } = await params;
   const db = createServiceClient();
+  const resolved = await resolveProjectId(db, idOrSlug);
+  if (!resolved) {
+    return (
+      <div className="mx-auto max-w-3xl px-6 py-10 text-gray-400">Project not found.</div>
+    );
+  }
+  const id = resolved;
 
   const [
     { data: project },

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { authenticateAndGetDb } from '@/lib/supabase/auth';
 import { extractPdf } from '@/lib/pdf/extract';
 import { ingestKbDocument } from '@/lib/kb/ingest';
+import { resolveProjectId } from '@/lib/project-resolver';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -21,11 +22,13 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const { id: projectId } = await params;
+  const { id: idOrSlug } = await params;
   const { user, db, error } = await authenticateAndGetDb(request);
   if (error || !db || !user) {
     return NextResponse.json({ error: error ?? 'Unauthorized' }, { status: 401 });
   }
+  const projectId = await resolveProjectId(db, idOrSlug);
+  if (!projectId) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
 
   const form = await request.formData().catch(() => null);
   if (!form) return NextResponse.json({ error: 'Expected multipart form' }, { status: 400 });
@@ -46,10 +49,6 @@ export async function POST(
       { status: 413 }
     );
   }
-
-  // Verify project exists (auth is enough for v0 — no per-project membership gate yet)
-  const { data: project } = await db.from('projects').select('id').eq('id', projectId).single();
-  if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
 
   // Extract text. PDFs via pdf-parse; .txt/.md treated as raw.
   const bytes = Buffer.from(await file.arrayBuffer());

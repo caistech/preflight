@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateAndGetDb } from '@/lib/supabase/auth';
+import { resolveProjectId } from '@/lib/project-resolver';
 
 export const dynamic = 'force-dynamic';
 
@@ -21,11 +22,13 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const { id: projectId } = await params;
+  const { id: idOrSlug } = await params;
   const { user, db, error } = await authenticateAndGetDb(request);
   if (error || !db || !user) {
     return NextResponse.json({ error: error ?? 'Unauthorized' }, { status: 401 });
   }
+  const projectId = await resolveProjectId(db, idOrSlug);
+  if (!projectId) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
 
   const body = (await request.json().catch(() => ({}))) as AddRuleBody;
   const requirement = (body.requirement ?? '').trim();
@@ -45,9 +48,6 @@ export async function POST(
   if (!['hard-fail', 'review', 'informational'].includes(severity)) {
     return NextResponse.json({ error: 'Invalid severity' }, { status: 400 });
   }
-
-  const { data: project } = await db.from('projects').select('id').eq('id', projectId).single();
-  if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
 
   const check_spec = {
     kind: 'manual-check' as const,
@@ -89,11 +89,13 @@ export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const { id: projectId } = await params;
+  const { id: idOrSlug } = await params;
   const { user, db, error } = await authenticateAndGetDb(request);
   if (error || !db || !user) {
     return NextResponse.json({ error: error ?? 'Unauthorized' }, { status: 401 });
   }
+  const projectId = await resolveProjectId(db, idOrSlug);
+  if (!projectId) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
 
   const body = await request.json().catch(() => ({}));
   const rowId = body.row_id as string | undefined;

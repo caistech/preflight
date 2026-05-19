@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { authenticateAndGetDb } from '@/lib/supabase/auth';
 import { newDrafterToken } from '@/lib/drafter-token';
 import { sendDrafterLinkEmail } from '@/lib/email/drafter-link';
+import { resolveProjectId } from '@/lib/project-resolver';
 
 export const dynamic = 'force-dynamic';
 
@@ -9,10 +10,14 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const { id: projectId } = await params;
+  const { id: idOrSlug } = await params;
   const { user, db, error } = await authenticateAndGetDb(request);
   if (error || !db || !user) {
     return NextResponse.json({ error: error ?? 'Unauthorized' }, { status: 401 });
+  }
+  const projectId = await resolveProjectId(db, idOrSlug);
+  if (!projectId) {
+    return NextResponse.json({ error: 'Project not found' }, { status: 404 });
   }
 
   const body = await request.json().catch(() => ({}));
