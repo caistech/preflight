@@ -99,3 +99,43 @@ export async function POST(
     email_error: emailSent?.error ?? null,
   });
 }
+
+/**
+ * PATCH — revoke an active drafter token. Body: { token_id }.
+ * Sets revoked_at to now; existing uploads remain accessible via the runs
+ * URL but the upload widget will refuse new submissions.
+ */
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id: idOrSlug } = await params;
+  const { user, db, error } = await authenticateAndGetDb(request);
+  if (error || !db || !user) {
+    return NextResponse.json({ error: error ?? 'Unauthorized' }, { status: 401 });
+  }
+  const projectId = await resolveProjectId(db, idOrSlug);
+  if (!projectId) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
+
+  const body = await request.json().catch(() => ({}));
+  const tokenId = body.token_id as string | undefined;
+  if (!tokenId) {
+    return NextResponse.json({ error: 'token_id required' }, { status: 400 });
+  }
+
+  const { error: upErr } = await db
+    .from('drafter_tokens')
+    .update({ revoked_at: new Date().toISOString() })
+    .eq('id', tokenId)
+    .eq('project_id', projectId);
+  if (upErr) return NextResponse.json({ error: upErr.message }, { status: 500 });
+
+  await db.from('audit_log').insert({
+    project_id: projectId,
+    actor_id: user.id,
+    action: 'drafter_link_revoked',
+    payload: { token_id: tokenId },
+  });
+
+  return NextResponse.json({ ok: true });
+}

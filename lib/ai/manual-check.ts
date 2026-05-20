@@ -52,44 +52,90 @@ ${slices}
 
 Answer with the JSON object as instructed. Remember: unsure is valid; never invent specifics the drafter would copy verbatim.`;
 
+  // Try once; if the JSON tail is missing/malformed, retry once with an
+  // explicit "format reminder" appended to the user prompt. Catches the
+  // occasional case where the LLM forgets the JSON sentinel or trails text
+  // after the closing brace. Caps at 2 attempts to keep cost bounded.
   let parsed: { outcome?: string; message?: string } = {};
   let raw = '';
-  try {
-    const msg = await anthropic().messages.create({
-      model: MODEL_MANUAL_CHECK,
-      max_tokens: 600,
-      system: SYSTEM,
-      messages: [{ role: 'user', content: userPrompt }],
-    });
-    raw = msg.content
-      .filter((b) => b.type === 'text')
-      .map((b) => (b as { type: 'text'; text: string }).text)
-      .join('\n');
-    const m = raw.match(/\{[\s\S]*\}\s*$/);
-    if (m) parsed = JSON.parse(m[0]);
-  } catch (e) {
+  let lastError: string | null = null;
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const content =
+        attempt === 0
+          ? userPrompt
+          : `${userPrompt}\n\nYour previous response did not end with a JSON object I could parse. Reply again — this time end with EXACTLY one JSON object on the last line: {"outcome": "pass"|"fail"|"unsure", "message": "<one sentence>"}. No trailing commentary after it.`;
+      const msg = await anthropic().messages.create({
+        model: MODEL_MANUAL_CHECK,
+        max_tokens: 600,
+        system: SYSTEM,
+        messages: [{ role: 'user', content }],
+      });
+      raw = msg.content
+        .filter((b) => b.type === 'text')
+        .map((b) => (b as { type: 'text'; text: string }).text)
+        .join('\n');
+      const m = raw.match(/\{[\s\S]*\}\s*$/);
+      if (m) {
+        parsed = JSON.parse(m[0]);
+        if (parsed.outcome && parsed.message) break; // got both fields cleanly
+      }
+      lastError = 'malformed JSON tail or missing fields';
+    } catch (e) {
+      lastError = (e as Error).message;
+    }
+  }
+
+  // If after both attempts we still don't have a usable response, surface a
+  // diagnostic rather than the silent '(no message returned)' that prior
+  // versions emitted.
+  if (!parsed.outcome) {
     return {
       outcome: 'error',
-      message: `LLM error: ${(e as Error).message}`,
+      message: `LLM did not produce a parseable response after 2 attempts (${lastError ?? 'unknown'}). Raw output kept for debugging.`,
+      llm_reasoning: raw,
     };
   }
 
-  const outcome = (parsed.outcome ?? 'unsure') as 'pass' | 'fail' | 'unsure';
+  const outcome = parsed.outcome as 'pass' | 'fail' | 'unsure';
   const validOutcomes = ['pass', 'fail', 'unsure'] as const;
   const safeOutcome = (validOutcomes as readonly string[]).includes(outcome) ? outcome : 'unsure';
 
   return {
     outcome: safeOutcome,
-    message: parsed.message ?? '(no message returned)',
+    message: parsed.message ?? 'No specific finding (LLM returned outcome without message).',
     llm_reasoning: raw,
   };
 }
 
+/**
+ * Always-on patterns that get added to every manual-check's slicer, even when
+ * the rule's context_hints don't mention them. Bare bearings + RL values + sheet
+ * markers tend to be relevant to most drawing-set questions, and the slicer
+ * was previously missing them when rules only listed keyword hints.
+ */
+const AUTO_PATTERNS = [
+  '\\d+\\.\\d{1,2}\\s*m\\b',          // dimensions e.g. 72.00m, 10.27m
+  '\\d+°\\d+\'\\d+"',                 // bearings e.g. 90°0'29"
+  '\\bRL\\s*\\d+\\.\\d+\\b',          // reduced-level callouts
+  '\\bFFL\\b|\\bFCL\\b|\\bNGL\\b',    // floor/ceiling/ground-level acronyms
+  '---\\s*PAGE\\s*\\d+\\s*---',       // pdfjs page markers
+];
+
 function extractContextSlices(text: string, hints: string[], windowChars = 600): string {
-  const lower = text.toLowerCase();
+  void hints; // intentionally consume parameter without lint complaint
+
   const slices: string[] = [];
-  for (const hint of hints) {
-    const re = new RegExp(hint, 'gi');
+  const allHints = [...hints, ...AUTO_PATTERNS];
+  for (const hint of allHints) {
+    let re: RegExp;
+    try {
+      re = new RegExp(hint, 'gi');
+    } catch {
+      // Treat as literal substring on bad regex
+      re = new RegExp(escapeRegex(hint), 'gi');
+    }
     let m: RegExpExecArray | null;
     let safety = 0;
     while ((m = re.exec(text)) !== null && safety < 8) {
@@ -100,5 +146,17 @@ function extractContextSlices(text: string, hints: string[], windowChars = 600):
     }
   }
   if (slices.length === 0) return text.slice(0, 4000);
-  return slices.join('\n---\n').slice(0, 8000);
+  // De-dup overlapping slices roughly by first-200-char fingerprint
+  const seen = new Set<string>();
+  const deduped = slices.filter((s) => {
+    const fp = s.slice(0, 200);
+    if (seen.has(fp)) return false;
+    seen.add(fp);
+    return true;
+  });
+  return deduped.join('\n---\n').slice(0, 8000);
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

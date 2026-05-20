@@ -147,29 +147,12 @@ export function DrafterLinkPanel({
                     <th className="px-3 py-2">Uses</th>
                     <th className="px-3 py-2">Last used</th>
                     <th className="px-3 py-2">Status</th>
+                    <th className="px-3 py-2"></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-800">
                   {existingTokens.map((t) => (
-                    <tr key={t.id} className="text-gray-300">
-                      <td className="px-3 py-2">{t.drafter_name ?? '—'}</td>
-                      <td className="px-3 py-2 text-gray-500">
-                        {new Date(t.expires_at).toLocaleDateString()}
-                      </td>
-                      <td className="px-3 py-2">{t.uses}</td>
-                      <td className="px-3 py-2 text-gray-500">
-                        {t.last_used_at ? new Date(t.last_used_at).toLocaleDateString() : '—'}
-                      </td>
-                      <td className="px-3 py-2">
-                        {t.revoked_at ? (
-                          <span className="text-red-400">revoked</span>
-                        ) : new Date(t.expires_at) < new Date() ? (
-                          <span className="text-gray-500">expired</span>
-                        ) : (
-                          <span className="text-emerald-400">active</span>
-                        )}
-                      </td>
-                    </tr>
+                    <TokenRow key={t.id} token={t} projectId={projectId} />
                   ))}
                 </tbody>
               </table>
@@ -178,5 +161,64 @@ export function DrafterLinkPanel({
         )}
       </div>
     </section>
+  );
+}
+
+function TokenRow({ token, projectId }: { token: DrafterToken; projectId: string }) {
+  const [busy, setBusy] = useState(false);
+  const [revoked, setRevoked] = useState(!!token.revoked_at);
+
+  const expired = new Date(token.expires_at) < new Date();
+  const isActive = !revoked && !expired;
+
+  async function onRevoke() {
+    if (!confirm(`Revoke this link for ${token.drafter_name ?? 'this drafter'}? Existing uploads stay accessible; new uploads will be refused.`)) return;
+    setBusy(true);
+    const r = await fetch(`/api/projects/${projectId}/drafter-link`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token_id: token.id }),
+    });
+    setBusy(false);
+    if (r.ok) {
+      setRevoked(true);
+    } else {
+      const j = await r.json().catch(() => ({}));
+      alert(`Revoke failed: ${j.error ?? r.status}`);
+    }
+  }
+
+  return (
+    <tr className="text-gray-300">
+      <td className="px-3 py-2">{token.drafter_name ?? '—'}</td>
+      <td className="px-3 py-2 text-gray-500">
+        {new Date(token.expires_at).toLocaleDateString()}
+      </td>
+      <td className="px-3 py-2">{token.uses}</td>
+      <td className="px-3 py-2 text-gray-500">
+        {token.last_used_at ? new Date(token.last_used_at).toLocaleDateString() : '—'}
+      </td>
+      <td className="px-3 py-2">
+        {revoked ? (
+          <span className="text-red-400">revoked</span>
+        ) : expired ? (
+          <span className="text-gray-500">expired</span>
+        ) : (
+          <span className="text-emerald-400">active</span>
+        )}
+      </td>
+      <td className="px-3 py-2 text-right">
+        {isActive && (
+          <button
+            type="button"
+            onClick={onRevoke}
+            disabled={busy}
+            className="rounded-md border border-gray-700 px-2 py-1 text-xs text-gray-400 hover:border-red-500 hover:text-red-400 disabled:opacity-50"
+          >
+            {busy ? '…' : 'Revoke'}
+          </button>
+        )}
+      </td>
+    </tr>
   );
 }
