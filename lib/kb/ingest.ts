@@ -42,6 +42,20 @@ export async function ingestKbDocument(
     throw new Error('Empty content — nothing to ingest');
   }
 
+  // Dedup: if a doc with the same (project_id, title) already exists,
+  // SKIP rather than insert a duplicate. Drive sync's source_ref dedup
+  // can miss when the same file lives in multiple subfolders with
+  // different Drive IDs; title-level dedup catches that case too.
+  const { data: dup } = await db
+    .from('kb_documents')
+    .select('id')
+    .eq('project_id', input.projectId)
+    .eq('title', input.title)
+    .maybeSingle();
+  if (dup) {
+    return { document_id: dup.id, chunk_count: 0, warnings: [`Skipped — document with title "${input.title}" already exists in this project's KB`] };
+  }
+
   // 1. Persist the document
   const { data: doc, error: docErr } = await db
     .from('kb_documents')
