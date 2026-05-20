@@ -93,7 +93,7 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
       .limit(50),
     db
       .from('drive_connections')
-      .select('id, paused')
+      .select('id, email, folder_id, paused, last_sync_at')
       .eq('project_id', id)
       .maybeSingle(),
     db
@@ -121,7 +121,13 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
     source_ref: string | null;
     created_at: string;
   }>;
-  const driveConnected = !!driveConn && !driveConn.paused;
+  const drive = {
+    connected: !!driveConn,
+    email: driveConn?.email ?? null,
+    folder_id: driveConn?.folder_id ?? null,
+    last_sync_at: driveConn?.last_sync_at ?? null,
+    paused: driveConn?.paused ?? false,
+  };
   const inboundDomain = process.env.RESEND_INBOUND_DOMAIN || 'nexeukro.resend.app';
   const inboundEmailAlias = `${project.slug}@${inboundDomain}`;
   const recentInbound = (inbound ?? []) as Array<{
@@ -229,7 +235,7 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
       <SourcesPanel
         projectId={id}
         inboundEmailAlias={inboundEmailAlias}
-        driveConnected={driveConnected}
+        drive={drive}
         existingDocs={existingKbDocs}
         recentInbound={recentInbound}
       />

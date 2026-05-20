@@ -19,6 +19,14 @@ interface InboundEmail {
   created_at: string;
 }
 
+interface DriveConnectionInfo {
+  connected: boolean;
+  email: string | null;
+  folder_id: string | null;
+  last_sync_at: string | null;
+  paused: boolean;
+}
+
 const SOURCE_KIND_OPTIONS = [
   { value: 'planner-letter', label: 'Planner letter' },
   { value: 'council-audit', label: 'Council audit / feedback' },
@@ -29,13 +37,13 @@ const SOURCE_KIND_OPTIONS = [
 export function SourcesPanel({
   projectId,
   inboundEmailAlias,
-  driveConnected,
+  drive,
   existingDocs,
   recentInbound = [],
 }: {
   projectId: string;
   inboundEmailAlias: string;
-  driveConnected: boolean;
+  drive: DriveConnectionInfo;
   existingDocs: KbDocument[];
   recentInbound?: InboundEmail[];
 }) {
@@ -67,22 +75,7 @@ export function SourcesPanel({
             Forward (or BCC) planner / Council / engineer correspondence here. Each email is auto-ingested into the KB — no further action needed.
           </div>
         </div>
-        <div className="rounded-2xl border border-gray-800 bg-gray-900/30 p-4">
-          <div className="mb-1 text-xs uppercase tracking-wide text-gray-500">Google Drive</div>
-          {driveConnected ? (
-            <div className="text-xs text-emerald-300">Connected — incremental sync runs every 30 min.</div>
-          ) : (
-            <div className="space-y-2">
-              <div className="text-xs text-gray-400">Not connected. The Drive ingest runs on a 30-min cron once OAuth completes.</div>
-              <a
-                href={`/api/drive/oauth?project_id=${projectId}`}
-                className="inline-block rounded-md border border-gray-700 px-3 py-1.5 text-xs text-gray-200 hover:border-emerald-500 hover:text-emerald-400"
-              >
-                Connect Drive →
-              </a>
-            </div>
-          )}
-        </div>
+        <DriveCard projectId={projectId} drive={drive} />
       </div>
 
       {/* Recent inbound — auto-promoted to KB */}
@@ -412,6 +405,159 @@ function StatusMessage({ ok, text }: { ok: boolean; text: string }) {
       }`}
     >
       {text}
+    </div>
+  );
+}
+
+function DriveCard({ projectId, drive }: { projectId: string; drive: DriveConnectionInfo }) {
+  const [folderInput, setFolderInput] = useState('');
+  const [busy, setBusy] = useState<string | null>(null);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  async function call(payload: Record<string, unknown>, opName: string) {
+    setBusy(opName);
+    setMsg(null);
+    const r = await fetch(`/api/projects/${projectId}/drive`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const j = await r.json().catch(() => ({}));
+    setBusy(null);
+    if (!r.ok) {
+      setMsg({ ok: false, text: j.error ?? `HTTP ${r.status}` });
+      return null;
+    }
+    return j as Record<string, unknown>;
+  }
+
+  async function onSetFolder(e: React.FormEvent) {
+    e.preventDefault();
+    if (!folderInput.trim()) return;
+    const j = await call({ folder_id: folderInput.trim() }, 'set');
+    if (j) {
+      setMsg({ ok: true, text: 'Folder saved. Click Sync now to pull files into the KB.' });
+      setFolderInput('');
+      setTimeout(() => window.location.reload(), 800);
+    }
+  }
+
+  async function onSyncNow() {
+    const j = await call({ action: 'sync_now' }, 'sync');
+    if (j) {
+      setMsg({ ok: true, text: String(j.message ?? 'Sync triggered.') });
+      setTimeout(() => window.location.reload(), 1200);
+    }
+  }
+
+  async function onPauseResume() {
+    const j = await call({ action: drive.paused ? 'resume' : 'pause' }, 'pause');
+    if (j) {
+      setMsg({ ok: true, text: drive.paused ? 'Resumed.' : 'Paused.' });
+      setTimeout(() => window.location.reload(), 600);
+    }
+  }
+
+  async function onDisconnect() {
+    if (!confirm('Disconnect Drive? You can reconnect any time.')) return;
+    const j = await call({ action: 'disconnect' }, 'disc');
+    if (j) {
+      setMsg({ ok: true, text: 'Disconnected.' });
+      setTimeout(() => window.location.reload(), 600);
+    }
+  }
+
+  if (!drive.connected) {
+    return (
+      <div className="rounded-2xl border border-gray-800 bg-gray-900/30 p-4">
+        <div className="mb-1 text-xs uppercase tracking-wide text-gray-500">Google Drive</div>
+        <div className="space-y-2">
+          <div className="text-xs text-gray-400">
+            Connect a Drive folder. Cron pulls new files (PDF / Google Docs / .txt) into the KB every 30 min.
+          </div>
+          <a
+            href={`/api/drive/oauth?project_id=${projectId}`}
+            className="inline-block rounded-md border border-gray-700 px-3 py-1.5 text-xs text-gray-200 hover:border-emerald-500 hover:text-emerald-400"
+          >
+            Connect Drive →
+          </a>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-2xl border border-gray-800 bg-gray-900/30 p-4">
+      <div className="mb-1 flex items-center justify-between">
+        <div className="text-xs uppercase tracking-wide text-gray-500">Google Drive</div>
+        <span
+          className={`rounded-full px-2 py-0.5 text-xs ${
+            drive.paused ? 'bg-amber-500/15 text-amber-300' : 'bg-emerald-500/15 text-emerald-300'
+          }`}
+        >
+          {drive.paused ? 'paused' : 'active'}
+        </span>
+      </div>
+      <div className="mb-1 text-xs text-gray-300">
+        Connected{drive.email ? <> as <span className="font-mono text-emerald-300">{drive.email}</span></> : null}
+      </div>
+      {drive.folder_id ? (
+        <div className="mb-2 text-xs text-gray-400">
+          Folder: <span className="font-mono text-gray-300">{drive.folder_id}</span>
+        </div>
+      ) : (
+        <div className="mb-2 text-xs text-amber-400">No folder selected — pick one below.</div>
+      )}
+      {drive.last_sync_at && (
+        <div className="mb-2 text-xs text-gray-500">Last sync: {new Date(drive.last_sync_at).toLocaleString('en-AU')}</div>
+      )}
+
+      <form onSubmit={onSetFolder} className="mt-2 space-y-2">
+        <input
+          type="text"
+          value={folderInput}
+          onChange={(e) => setFolderInput(e.target.value)}
+          placeholder="Paste Drive folder URL or ID"
+          className="w-full rounded-md border border-gray-700 bg-gray-900 px-2 py-1.5 text-xs outline-none focus:border-emerald-500"
+        />
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="submit"
+            disabled={busy === 'set' || !folderInput.trim()}
+            className="rounded-md border border-gray-700 px-2 py-1 text-xs text-gray-200 hover:border-emerald-500 hover:text-emerald-400 disabled:opacity-50"
+          >
+            {busy === 'set' ? 'Saving…' : drive.folder_id ? 'Change folder' : 'Set folder'}
+          </button>
+          {drive.folder_id && (
+            <button
+              type="button"
+              onClick={onSyncNow}
+              disabled={busy === 'sync'}
+              className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-xs text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-50"
+            >
+              {busy === 'sync' ? 'Syncing…' : 'Sync now'}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onPauseResume}
+            disabled={busy === 'pause'}
+            className="rounded-md border border-gray-700 px-2 py-1 text-xs text-gray-400 hover:text-gray-200"
+          >
+            {drive.paused ? 'Resume' : 'Pause'}
+          </button>
+          <button
+            type="button"
+            onClick={onDisconnect}
+            disabled={busy === 'disc'}
+            className="rounded-md border border-gray-700 px-2 py-1 text-xs text-gray-500 hover:border-red-500 hover:text-red-400"
+          >
+            Disconnect
+          </button>
+        </div>
+      </form>
+
+      {msg && <div className="mt-2"><StatusMessage ok={msg.ok} text={msg.text} /></div>}
     </div>
   );
 }

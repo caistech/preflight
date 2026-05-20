@@ -1,14 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateAndGetDb } from '@/lib/supabase/auth';
-import { exchangeCodeForTokens } from '@/lib/drive/client';
+import { exchangeCodeForTokens, getOAuthClient } from '@/lib/drive/client';
+import { google } from 'googleapis';
 
 export const dynamic = 'force-dynamic';
 
 /**
  * Google Drive OAuth callback.
  *
- * Verifies the state cookie matches, exchanges the auth code for tokens,
- * persists a drive_connections row scoped to the project.
+ * 1. Verifies state cookie matches
+ * 2. Exchanges the auth code for tokens
+ * 3. Fetches the user's Google email so we can show "connected as X" in the UI
+ * 4. Stores tokens (base64-JSON in encrypted_tokens column) + email
+ * 5. Leaves folder_id null — operator picks a folder via the panel after connection
  */
 export async function GET(request: NextRequest) {
   const { user, db, error } = await authenticateAndGetDb(request);
@@ -40,25 +44,35 @@ export async function GET(request: NextRequest) {
     );
   }
 
+  // Fetch the connecting user's Google email — helpful as "connected as X" UI
+  let email: string | null = null;
+  try {
+    const oauth = getOAuthClient();
+    oauth.setCredentials(tokens);
+    const userinfo = await google.oauth2({ version: 'v2', auth: oauth }).userinfo.get();
+    email = userinfo.data.email ?? null;
+  } catch {
+    // non-fatal; the connection still works without the email shown in UI
+  }
+
+  const encrypted = Buffer.from(JSON.stringify(tokens), 'utf-8').toString('base64');
+
   await db.from('drive_connections').upsert(
     {
       project_id: projectId,
-      access_token: tokens.access_token ?? '',
-      refresh_token: tokens.refresh_token ?? '',
-      token_expires_at: tokens.expiry_date ? new Date(tokens.expiry_date).toISOString() : null,
-      scopes: tokens.scope ? tokens.scope.split(' ') : [],
-      google_user_id: null,
-      google_email: null,
+      encrypted_tokens: encrypted,
+      email,
+      paused: false,
       updated_at: new Date().toISOString(),
     },
-    { onConflict: 'project_id,google_user_id' }
+    { onConflict: 'project_id' }
   );
 
   await db.from('audit_log').insert({
     project_id: projectId,
     actor_id: user.id,
     action: 'drive_connected',
-    payload: { scopes: tokens.scope },
+    payload: { email, scopes: tokens.scope },
   });
 
   return NextResponse.redirect(`${origin}/projects/${projectId}?drive_connected=1`);
