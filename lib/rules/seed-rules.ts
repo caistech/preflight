@@ -43,15 +43,69 @@ export const SEED_RULES: Omit<RegisterRow, 'id' | 'project_id'>[] = [
     active: true,
   },
   {
-    requirement: 'A site-wide sheet should contain exactly one title block; multiple title blocks usually indicate a single-unit drawing accidentally placed on a site-wide sheet.',
+    requirement:
+      'On a site-wide sheet (showing multiple units), the title block must reflect the full scope — not a single unit. A title block reading "UNIT 1 - 2x1 DWELLING (UNIT 1)" on a sheet that depicts the whole subdivision is a hard-fail; the title block must describe the site-wide scope instead.',
     source: 'F2K drafting standard',
     source_url: null,
-    check_type: 'logic-rule',
+    check_type: 'manual-check',
     check_spec: {
-      kind: 'logic-rule',
-      logic: 'title_block_count',
-      params: { expected: 1 },
-      when_facts: { sheet_is_site_wide: 'true' },
+      kind: 'manual-check',
+      prompt:
+        "Look at the title block on this sheet (usually bottom-right corner — contains project name, sheet number, scale, etc.). Read what scope the title block describes — does it name a single unit (e.g. 'UNIT 1', '2x1 DWELLING (UNIT 1)') or the full site? Then check what the sheet itself depicts — does it show multiple units / a site-wide plan / multiple buildings? Answer pass / fail / unsure. FAIL = single-unit title block on a sheet showing multiple units (or vice versa). PASS = title block scope matches what's on the sheet. UNSURE = cannot determine from extracted text. Do NOT recommend a new title; flag for human review only.",
+      context_hints: ['title block', 'UNIT', 'DWELLING', 'SHEET', 'PROJECT NO', 'SCALE'],
+      use_kb_retrieval: false,
+      max_answer_chars: 400,
+    },
+    severity: 'hard-fail',
+    active: true,
+  },
+  {
+    requirement:
+      'All level values on the drawing set must use the SAME datum reference. Mixing AHD-converted FFL/FCL values with assumed-datum contour levels is a hard-fail — produces misleading readings (e.g. a ~38m stilt where there is actually a ~600mm pad).',
+    source: 'Project history — partial AHD conversions caught in prior reviews; datum inconsistency is a recurring pattern',
+    source_url: null,
+    check_type: 'manual-check',
+    check_spec: {
+      kind: 'manual-check',
+      prompt:
+        'Look at the level values on this drawing set: FFL, FCL, NGL, and any RL contour heights on the site plan or location plan. Is there an internal inconsistency between datum systems — for example FFL/FCL values in the 40–50m range (suggesting AHD) sitting alongside contour levels in the 9–11m range (suggesting assumed datum)? Answer pass / fail / unsure with a one-sentence reason. Cite specific values if you find a mismatch. Do NOT recommend which datum to use — that is a project-owner decision.',
+      context_hints: ['FFL', 'FCL', 'NGL', 'AHD', 'datum', 'RL', 'contour'],
+      use_kb_retrieval: true,
+      max_answer_chars: 500,
+    },
+    severity: 'hard-fail',
+    active: true,
+  },
+  {
+    requirement:
+      'The DATUM note (typically in the title block or bottom-right of the sheet) must accurately describe the datum used for the level values shown on the drawing. A note that says "All levels shown are assumed datum. Add Xm to convert to AHD" is invalid if FFL/FCL values are already shown in AHD.',
+    source: 'Project history — DATUM note inaccuracy is a recurring pattern when level conversions are partial',
+    source_url: null,
+    check_type: 'manual-check',
+    check_spec: {
+      kind: 'manual-check',
+      prompt:
+        'Find the DATUM note on this drawing (typically in or near the title block, bottom-right). Does the note accurately describe what is shown on the drawing? If the note says levels are in assumed datum, are the FFL/FCL values actually in the assumed range? If the note says levels are in AHD, are they in the AHD range? Answer pass / fail / unsure with a one-sentence reason quoting the DATUM note and a sample FFL value. Do NOT recommend a rewrite of the note — flag the discrepancy for human review only.',
+      context_hints: ['DATUM', 'AHD', 'assumed', 'convert', 'FFL'],
+      use_kb_retrieval: true,
+      max_answer_chars: 500,
+    },
+    severity: 'review',
+    active: true,
+  },
+  {
+    requirement:
+      'The revision-history line in the title block must accurately describe what changed in the current revision. Generic claims like "Datum conversion — all levels revised to AHD" must match what is actually on the drawing; a partial conversion described as complete is a fail.',
+    source: 'Project history — revision-history mis-description is a recurring pattern',
+    source_url: null,
+    check_type: 'manual-check',
+    check_spec: {
+      kind: 'manual-check',
+      prompt:
+        'Find the revision-history block on this drawing (usually in or above the title block). Read the description for the latest revision. Does that description accurately reflect what is shown on the drawing? Examples of misalignment to flag: revision says "all levels revised to AHD" but contour levels are still in assumed datum; revision says "DATUM note added" but no DATUM note is visible; revision says "Unit numbering corrected" but the letterbox still shows duplicates. Answer pass / fail / unsure with a one-sentence reason. Do NOT rewrite the revision line for the drafter.',
+      context_hints: ['REVISION', 'REV ', 'revision history', 'DATUM', 'AHD'],
+      use_kb_retrieval: true,
+      max_answer_chars: 500,
     },
     severity: 'review',
     active: true,
