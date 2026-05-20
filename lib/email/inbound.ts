@@ -50,7 +50,7 @@ export async function persistInboundEmail(
   }
 
   // 2. Always persist the raw inbound row (audit trail, even if project unknown)
-  const { data: inboundRow } = await db
+  const { data: inboundRow, error: inboundErr } = await db
     .from('inbound_emails')
     .upsert(
       {
@@ -68,6 +68,12 @@ export async function persistInboundEmail(
     )
     .select('id')
     .single();
+  if (inboundErr) {
+    // Don't fail the webhook — KB ingest is the load-bearing step — but
+    // surface the error in the result so /api/webhooks/resend-inbound returns
+    // it and we don't have a silent-failure debugging gap again.
+    console.error('inbound_emails upsert failed:', inboundErr.message);
+  }
 
   // 3. Auto-promote to KB if we matched a project and have a body
   if (!projectId) {
