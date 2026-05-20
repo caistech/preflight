@@ -2,25 +2,25 @@
  * Google Drive client + incremental sync.
  *
  * OAuth flow lands here; the cron route at /api/cron/drive-sync calls
- * syncDriveForProject() for every project that has a non-paused
- * drive_connections row.
+ * syncDriveForProject() for every project with a non-paused drive_connections
+ * row.
  *
- * Sync model:
- *   - drive_connections.folder_id is the operator-chosen folder to ingest
- *   - For each Drive file under that folder (recursive), check whether
- *     it's already in kb_documents via (project_id, source_kind='drive',
- *     source_ref=<drive_file_id>). Skip if present. Otherwise download,
- *     extract text, run through ingestKbDocument with source_kind='drive'.
- *   - last_sync_at is updated on every successful pass.
- *
- * Initially only PDFs + Google Docs + plain text are supported. Other
- * MIME types are skipped with a warning.
+ * Sync features:
+ *   - Recurses into all subfolders under the chosen root
+ *   - Supports PDF (pdfjs), Google Docs/Sheets/Slides (Drive export),
+ *     .docx (mammoth), .xlsx (sheetjs), plain text + markdown
+ *   - Image-only PDFs fall back to Claude OCR (Haiku, document attachment)
+ *     when pdfjs extraction returns < 50 chars
+ *   - Files already in kb_documents (matched on source_ref=<file_id>) are
+ *     skipped — incremental sync that never re-embeds the same file
+ *   - Per-file errors are collected and surfaced to the UI
  */
 
 import { google } from 'googleapis';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { extractPdf } from '@/lib/pdf/extract';
 import { ingestKbDocument } from '@/lib/kb/ingest';
+import { anthropic, MODEL_HAIKU } from '@/lib/ai/anthropic';
 
 export function getOAuthClient() {
   const clientId = process.env.GOOGLE_CLIENT_ID;
@@ -40,7 +40,7 @@ export const DRIVE_SCOPES = [
 export function generateAuthUrl(state: string): string {
   return getOAuthClient().generateAuthUrl({
     access_type: 'offline',
-    prompt: 'consent', // forces refresh_token issuance every time
+    prompt: 'consent',
     scope: DRIVE_SCOPES,
     state,
   });
@@ -52,11 +52,16 @@ export async function exchangeCodeForTokens(code: string) {
   return tokens;
 }
 
+export interface FileErrorDetail {
+  file: string;
+  reason: string;
+}
+
 export interface DriveSyncResult {
   files_seen: number;
   files_new: number;
   files_skipped: number;
-  errors: string[];
+  errors: FileErrorDetail[];
   message: string;
 }
 
@@ -68,15 +73,74 @@ interface StoredDriveTokens {
   token_type?: string;
 }
 
-const INGESTIBLE_MIME_TYPES = new Set([
-  'application/pdf',
-  'application/vnd.google-apps.document',
-  'text/plain',
-  'text/markdown',
-]);
+const FOLDER_MIME = 'application/vnd.google-apps.folder';
 
-const MAX_FILES_PER_RUN = 25; // protect cron wall-time
+interface DriveExtractor {
+  download: 'media' | 'export';
+  exportMime?: string;
+  handle: (buf: Buffer, filename: string) => Promise<string>;
+}
+
+const EXTRACTORS: Record<string, DriveExtractor> = {
+  'application/pdf': {
+    download: 'media',
+    handle: async (buf) => {
+      const r = await extractPdf(buf);
+      if (r.text.length >= 50) return r.text;
+      // OCR fallback for image-only PDFs
+      return ocrPdfWithClaude(buf);
+    },
+  },
+  'application/vnd.google-apps.document': {
+    download: 'export',
+    exportMime: 'text/plain',
+    handle: async (buf) => buf.toString('utf-8'),
+  },
+  'application/vnd.google-apps.spreadsheet': {
+    download: 'export',
+    exportMime: 'text/csv',
+    handle: async (buf) => buf.toString('utf-8'),
+  },
+  'application/vnd.google-apps.presentation': {
+    download: 'export',
+    exportMime: 'text/plain',
+    handle: async (buf) => buf.toString('utf-8'),
+  },
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': {
+    download: 'media',
+    handle: async (buf) => {
+      const mammoth = await import('mammoth');
+      const result = await mammoth.extractRawText({ buffer: buf });
+      return result.value;
+    },
+  },
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': {
+    download: 'media',
+    handle: async (buf) => {
+      const XLSX = await import('xlsx');
+      const wb = XLSX.read(buf, { type: 'buffer' });
+      const sheets: string[] = [];
+      for (const name of wb.SheetNames) {
+        const sheet = wb.Sheets[name];
+        const csv = XLSX.utils.sheet_to_csv(sheet);
+        sheets.push(`=== Sheet: ${name} ===\n${csv}`);
+      }
+      return sheets.join('\n\n');
+    },
+  },
+  'text/plain': {
+    download: 'media',
+    handle: async (buf) => buf.toString('utf-8'),
+  },
+  'text/markdown': {
+    download: 'media',
+    handle: async (buf) => buf.toString('utf-8'),
+  },
+};
+
+const MAX_FILES_PER_RUN = 25;
 const MAX_BYTES = 10 * 1024 * 1024;
+const MAX_RECURSION_DEPTH = 5;
 
 export async function syncDriveForProject(
   db: SupabaseClient,
@@ -102,47 +166,22 @@ export async function syncDriveForProject(
     return result;
   }
 
-  // Tokens are stored as JSON string in encrypted_tokens (v0 uses base64 not real encryption — TODO).
   let tokens: StoredDriveTokens;
   try {
     tokens = JSON.parse(Buffer.from(conn.encrypted_tokens, 'base64').toString('utf-8'));
   } catch (e) {
-    result.errors.push(`Could not decode tokens: ${(e as Error).message}`);
+    result.errors.push({ file: '(connection)', reason: `Could not decode tokens: ${(e as Error).message}` });
     return result;
   }
 
   const oauth = getOAuthClient();
   oauth.setCredentials(tokens);
-  // googleapis auto-refreshes when access_token expires using refresh_token.
-
   const drive = google.drive({ version: 'v3', auth: oauth });
 
-  // Enumerate files under the folder (single-level for v0; recursive later).
-  // Use q='<folder>' in parents to keep the query simple.
-  let pageToken: string | undefined;
-  const filesToProcess: Array<{ id: string; name: string; mimeType: string; modifiedTime: string }> = [];
-  do {
-    const listResp = await drive.files.list({
-      q: `'${conn.folder_id}' in parents and trashed = false`,
-      fields: 'nextPageToken, files(id, name, mimeType, modifiedTime, size)',
-      pageSize: 100,
-      pageToken,
-    });
-    for (const f of listResp.data.files ?? []) {
-      if (!f.id || !f.name || !f.mimeType) continue;
-      filesToProcess.push({
-        id: f.id,
-        name: f.name,
-        mimeType: f.mimeType,
-        modifiedTime: f.modifiedTime ?? new Date().toISOString(),
-      });
-    }
-    pageToken = listResp.data.nextPageToken ?? undefined;
-  } while (pageToken);
+  // Recursive enumeration with depth cap
+  const allFiles = await enumerateFolderRecursive(drive, conn.folder_id, MAX_RECURSION_DEPTH, '');
+  result.files_seen = allFiles.length;
 
-  result.files_seen = filesToProcess.length;
-
-  // Filter to ingestible + not-yet-seen
   const { data: existing } = await db
     .from('kb_documents')
     .select('source_ref')
@@ -151,59 +190,53 @@ export async function syncDriveForProject(
   const seenIds = new Set((existing ?? []).map((r) => r.source_ref).filter(Boolean));
 
   let processed = 0;
-  for (const f of filesToProcess) {
+  for (const f of allFiles) {
     if (processed >= MAX_FILES_PER_RUN) {
-      result.errors.push(`Hit MAX_FILES_PER_RUN cap of ${MAX_FILES_PER_RUN} — remaining files will sync on the next cron pass`);
+      result.errors.push({
+        file: '(cap)',
+        reason: `Hit MAX_FILES_PER_RUN cap of ${MAX_FILES_PER_RUN}. Remaining files will sync on next pass.`,
+      });
       break;
     }
     if (seenIds.has(f.id)) {
       result.files_skipped++;
       continue;
     }
-    if (!INGESTIBLE_MIME_TYPES.has(f.mimeType)) {
+    const extractor = EXTRACTORS[f.mimeType];
+    if (!extractor) {
       result.files_skipped++;
       continue;
     }
 
     try {
-      let content = '';
-
-      if (f.mimeType === 'application/vnd.google-apps.document') {
-        // Google Docs — export as plain text
+      let buf: Buffer;
+      if (extractor.download === 'export') {
         const exp = await drive.files.export(
-          { fileId: f.id, mimeType: 'text/plain' },
+          { fileId: f.id, mimeType: extractor.exportMime! },
           { responseType: 'arraybuffer' }
         );
-        content = Buffer.from(exp.data as ArrayBuffer).toString('utf-8');
-      } else if (f.mimeType === 'application/pdf') {
-        const dl = await drive.files.get(
-          { fileId: f.id, alt: 'media' },
-          { responseType: 'arraybuffer' }
-        );
-        const buf = Buffer.from(dl.data as ArrayBuffer);
-        if (buf.length > MAX_BYTES) {
-          result.errors.push(`${f.name}: ${(buf.length / 1024 / 1024).toFixed(1)} MB exceeds MAX_BYTES`);
-          continue;
-        }
-        const extracted = await extractPdf(buf);
-        content = extracted.text;
+        buf = Buffer.from(exp.data as ArrayBuffer);
       } else {
-        // text/plain or text/markdown
         const dl = await drive.files.get(
           { fileId: f.id, alt: 'media' },
           { responseType: 'arraybuffer' }
         );
-        content = Buffer.from(dl.data as ArrayBuffer).toString('utf-8');
+        buf = Buffer.from(dl.data as ArrayBuffer);
+      }
+      if (buf.length > MAX_BYTES) {
+        result.errors.push({ file: f.displayName, reason: `${(buf.length / 1024 / 1024).toFixed(1)} MB exceeds MAX_BYTES (${MAX_BYTES / 1024 / 1024} MB)` });
+        continue;
       }
 
-      if (!content || content.trim().length < 30) {
-        result.errors.push(`${f.name}: extracted body too short — skipped`);
+      const content = (await extractor.handle(buf, f.name)).trim();
+      if (!content || content.length < 30) {
+        result.errors.push({ file: f.displayName, reason: `Extracted text too short (${content.length} chars) — may be image-only or empty` });
         continue;
       }
 
       await ingestKbDocument(db, {
         projectId,
-        title: f.name,
+        title: f.displayName,
         sourceKind: 'drive',
         sourceRef: f.id,
         content,
@@ -211,7 +244,7 @@ export async function syncDriveForProject(
       result.files_new++;
       processed++;
     } catch (e) {
-      result.errors.push(`${f.name}: ${(e as Error).message}`);
+      result.errors.push({ file: f.displayName, reason: (e as Error).message });
     }
   }
 
@@ -220,6 +253,89 @@ export async function syncDriveForProject(
     .update({ last_sync_at: new Date().toISOString() })
     .eq('id', conn.id);
 
-  result.message = `${result.files_seen} in folder, ${result.files_new} ingested, ${result.files_skipped} skipped, ${result.errors.length} errors`;
+  result.message = `${result.files_seen} in folder (incl. subfolders), ${result.files_new} ingested, ${result.files_skipped} skipped, ${result.errors.length} errors`;
   return result;
+}
+
+interface EnumeratedFile {
+  id: string;
+  name: string;
+  displayName: string; // includes folder breadcrumb
+  mimeType: string;
+  modifiedTime: string;
+}
+
+async function enumerateFolderRecursive(
+  drive: ReturnType<typeof google.drive>,
+  folderId: string,
+  depthRemaining: number,
+  pathPrefix: string
+): Promise<EnumeratedFile[]> {
+  const files: EnumeratedFile[] = [];
+  let pageToken: string | undefined;
+  do {
+    const listResp = await drive.files.list({
+      q: `'${folderId}' in parents and trashed = false`,
+      fields: 'nextPageToken, files(id, name, mimeType, modifiedTime, size)',
+      pageSize: 100,
+      pageToken,
+    });
+    for (const f of listResp.data.files ?? []) {
+      if (!f.id || !f.name || !f.mimeType) continue;
+      if (f.mimeType === FOLDER_MIME) {
+        if (depthRemaining > 0) {
+          const childPath = pathPrefix ? `${pathPrefix}/${f.name}` : f.name;
+          const children = await enumerateFolderRecursive(drive, f.id, depthRemaining - 1, childPath);
+          files.push(...children);
+        }
+      } else {
+        files.push({
+          id: f.id,
+          name: f.name,
+          displayName: pathPrefix ? `${pathPrefix}/${f.name}` : f.name,
+          mimeType: f.mimeType,
+          modifiedTime: f.modifiedTime ?? new Date().toISOString(),
+        });
+      }
+    }
+    pageToken = listResp.data.nextPageToken ?? undefined;
+  } while (pageToken);
+  return files;
+}
+
+/**
+ * OCR fallback — when pdfjs returns too little text for a PDF (i.e. it's a
+ * scanned image), use Claude's native PDF document support to extract text.
+ * Cheap on Haiku, no canvas/Tesseract needed.
+ */
+async function ocrPdfWithClaude(buf: Buffer): Promise<string> {
+  const base64 = buf.toString('base64');
+  try {
+    const msg = await anthropic().messages.create({
+      model: MODEL_HAIKU, // Haiku for OCR cost — image-only PDFs only fall here
+      max_tokens: 4000,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'document',
+              source: { type: 'base64', media_type: 'application/pdf', data: base64 },
+            },
+            {
+              type: 'text',
+              text: 'Extract all readable text from this PDF. Return ONLY the extracted text, line by line, no commentary or formatting.',
+            },
+          ],
+        },
+      ],
+    });
+    return msg.content
+      .filter((b) => b.type === 'text')
+      .map((b) => (b as { type: 'text'; text: string }).text)
+      .join('\n');
+  } catch (e) {
+    // Bubble up to caller as zero-length text; caller will error-out the file
+    throw new Error(`OCR fallback failed: ${(e as Error).message}`);
+  }
 }

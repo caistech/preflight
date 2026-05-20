@@ -413,10 +413,12 @@ function DriveCard({ projectId, drive }: { projectId: string; drive: DriveConnec
   const [folderInput, setFolderInput] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [errors, setErrors] = useState<Array<{ file: string; reason: string }>>([]);
 
   async function call(payload: Record<string, unknown>, opName: string) {
     setBusy(opName);
     setMsg(null);
+    setErrors([]);
     const r = await fetch(`/api/projects/${projectId}/drive`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -446,7 +448,11 @@ function DriveCard({ projectId, drive }: { projectId: string; drive: DriveConnec
     const j = await call({ action: 'sync_now' }, 'sync');
     if (j) {
       setMsg({ ok: true, text: String(j.message ?? 'Sync triggered.') });
-      setTimeout(() => window.location.reload(), 1200);
+      const errs = (j.errors ?? []) as Array<{ file: string; reason: string }>;
+      setErrors(errs);
+      // Only reload the page if everything went clean — otherwise leave the
+      // errors visible so the operator can read them.
+      if (errs.length === 0) setTimeout(() => window.location.reload(), 1200);
     }
   }
 
@@ -558,6 +564,19 @@ function DriveCard({ projectId, drive }: { projectId: string; drive: DriveConnec
       </form>
 
       {msg && <div className="mt-2"><StatusMessage ok={msg.ok} text={msg.text} /></div>}
+
+      {errors.length > 0 && (
+        <div className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-200">
+          <div className="mb-1 font-semibold">Per-file issues from last sync:</div>
+          <ul className="space-y-1">
+            {errors.map((e, i) => (
+              <li key={i}>
+                <span className="font-mono text-amber-300">{e.file}</span> — {e.reason}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }
