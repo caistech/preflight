@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { createServiceClient } from '@/lib/supabase/service';
 import { hashDrafterToken } from '@/lib/drafter-token';
+import { Disclaimer } from '@/components/disclaimer';
 
 export const dynamic = 'force-dynamic';
 
@@ -163,6 +164,8 @@ export default async function DrafterRunPage({ params }: Props) {
             or the upload completed before any register row evaluated.
           </div>
         )}
+
+        <Disclaimer />
       </div>
     </main>
   );

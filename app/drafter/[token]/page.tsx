@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { createServiceClient } from '@/lib/supabase/service';
 import { hashDrafterToken } from '@/lib/drafter-token';
 import { DrafterUpload } from './drafter-upload';
+import { Disclaimer } from '@/components/disclaimer';
 
 export const dynamic = 'force-dynamic';
 
@@ -271,6 +272,8 @@ export default async function DrafterPage({ params }: Props) {
           regression check, not a substitute for human review. Items marked{' '}
           <span className="text-amber-400">needs eyes</span> are prompts for a human (you), not findings.
         </div>
+
+        <Disclaimer />
       </div>
     </main>
   );

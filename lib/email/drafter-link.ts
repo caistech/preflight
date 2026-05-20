@@ -77,7 +77,10 @@ WHAT TO DO WITH IT
 - Nothing is shared with ${args.ownerLabel ?? 'the project owner'} unless you choose to share the result. The output is yours.
 - If anything looks wrong (a row flags that you know is fine, or the tool missed something it should have caught), reply to ${args.ownerEmail ?? 'the project owner'} — those gaps are how the register gets smarter for next time.
 
-${args.ownerEmail ? `Reply to ${args.ownerEmail} with any questions.\n\n` : ''}Thanks.
+${args.ownerEmail ? `Reply to ${args.ownerEmail} with any questions.\n\n` : ''}DISCLAIMER
+Preflight is a regression check, not a compliance certification. Responsibility for the drawing's correctness — including anything the tool misses — rests with the licensed drafter, engineer, architect, surveyor, or other professional whose name appears on the set. Preflight, Corporate AI Solutions, and the project owner accept no liability. "Confirmed OK" results are within the tool's scope only and do not constitute a sign-off on Council acceptance.
+
+Thanks.
 `;
 
   const htmlBody = `
@@ -133,6 +136,13 @@ ${args.ownerEmail ? `Reply to ${args.ownerEmail} with any questions.\n\n` : ''}T
   </ul>
 
   ${args.ownerEmail ? `<p style="margin: 24px 0 0; color: #6b7280; font-size: 13px;">Reply to <a href="mailto:${escapeAttr(args.ownerEmail)}" style="color:#10b981;">${escapeHtml(args.ownerEmail)}</a> with any questions.</p>` : ''}
+
+  <div style="margin: 28px 0 0; padding-top: 16px; border-top: 1px solid #e5e7eb; color: #6b7280; font-size: 11px; line-height: 1.5;">
+    <strong style="color: #4b5563;">Disclaimer.</strong> Preflight is a regression check, not a compliance certification.
+    Responsibility for the drawing's correctness — including anything the tool misses — rests with the licensed drafter, engineer,
+    architect, surveyor, or other professional whose name appears on the set. Preflight, Corporate AI Solutions, and the project
+    owner accept no liability. "Confirmed OK" results are within the tool's scope only and do not constitute a sign-off on Council acceptance.
+  </div>
 </div>`;
 
   const r = await fetch('https://api.resend.com/emails', {

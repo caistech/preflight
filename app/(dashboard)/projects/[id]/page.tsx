@@ -4,6 +4,7 @@ import { DrafterLinkPanel } from './drafter-link-panel';
 import { SourcesPanel } from './sources-panel';
 import { AddressEditor } from './address-editor';
 import { AddRuleForm } from './add-rule-form';
+import { Disclaimer } from '@/components/disclaimer';
 
 export const dynamic = 'force-dynamic';
 
@@ -288,6 +289,8 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
           </div>
         )}
       </section>
+
+      <Disclaimer />
     </div>
   );
 }
