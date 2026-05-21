@@ -187,6 +187,66 @@ function evalLogicRule(spec: LogicRuleSpec, input: CheckEvaluationInput): CheckE
         evidence: { found: [...found], missing, extra, duplicates, counts, cell_rows: cellRowLines },
       };
     }
+    case 'orphan_section_callouts': {
+      // PF-442-A107-003: any section callout matching (S|D|E)\d+/A\d{3}
+      // must reference a sheet present in the upload. Orphan callouts are a
+      // hard-fail. The default regex is configurable via params.callout_regex.
+      const calloutPattern = String(spec.params?.callout_regex ?? '[SDE]\\d+/A\\d{3}');
+      let calloutRe: RegExp;
+      try {
+        calloutRe = new RegExp(calloutPattern, 'gi');
+      } catch (e) {
+        return { outcome: 'error', message: `Bad callout regex: ${(e as Error).message}` };
+      }
+
+      const text = input.extractedText;
+      const callouts = [...text.matchAll(calloutRe)].map((m) => m[0]);
+      if (callouts.length === 0) {
+        return {
+          outcome: 'not-applicable',
+          message: 'No section callouts found in the upload',
+        };
+      }
+
+      // Extract target sheet number from each callout (the A### suffix).
+      const callouts_with_target: Array<{ label: string; target: string }> = callouts.map((c) => {
+        const m = c.match(/A(\d{3})/i);
+        return { label: c, target: m ? m[1] : '' };
+      }).filter((c) => c.target.length > 0);
+
+      // Count A### occurrences total and occurrences inside a callout. A sheet
+      // is "present" when total > callout-count (i.e. it appears at least once
+      // as a sheet identifier, not just as a callout target). This is the
+      // heuristic that distinguishes "S1/A107" (callout) from "A107" alone
+      // (title-block sheet number).
+      const sheetTokenRe = /\bA(\d{3})\b/g;
+      const allSheetTokens = [...text.matchAll(sheetTokenRe)].map((m) => m[1]);
+      const calloutTargetCounts: Record<string, number> = {};
+      for (const c of callouts_with_target) calloutTargetCounts[c.target] = (calloutTargetCounts[c.target] ?? 0) + 1;
+      const allCounts: Record<string, number> = {};
+      for (const t of allSheetTokens) allCounts[t] = (allCounts[t] ?? 0) + 1;
+
+      const presentSheets = new Set<string>();
+      for (const [sheet, total] of Object.entries(allCounts)) {
+        const calloutCount = calloutTargetCounts[sheet] ?? 0;
+        if (total > calloutCount) presentSheets.add(sheet);
+      }
+
+      const orphans = callouts_with_target.filter((c) => !presentSheets.has(c.target));
+      if (orphans.length === 0) {
+        return {
+          outcome: 'pass',
+          message: `All ${callouts_with_target.length} section callout(s) resolve to sheets present in the upload`,
+          evidence: { callouts: callouts_with_target, present_sheets: [...presentSheets] },
+        };
+      }
+
+      return {
+        outcome: 'fail',
+        message: `Orphan section callout(s): ${orphans.map((o) => `${o.label} (target A${o.target} missing)`).join('; ')}`,
+        evidence: { orphans, present_sheets: [...presentSheets], all_callouts: callouts_with_target },
+      };
+    }
     case 'title_block_count': {
       const expected = Number((spec.params?.expected as number) ?? 1);
       // Heuristic: a CAD title block usually clusters a SHEET / PROJECT NO / SCALE 1: / DRAWN / DATE label.
