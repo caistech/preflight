@@ -4,6 +4,7 @@ import { PasswordForm } from './password-form';
 import { ProfileForm } from './profile-form';
 import { AvatarForm } from './avatar-form';
 import { ConnectedServicesPanel } from './connected-services';
+import { DeleteAccount } from './delete-account';
 
 export const dynamic = 'force-dynamic';
 
@@ -79,18 +80,19 @@ export default async function SettingsPage() {
 
       <ConnectedServicesPanel />
 
-      {/* Honest audit footer — what's still missing per the global rule */}
-      <section className="mt-6 rounded-2xl border border-amber-500/30 bg-amber-500/5 p-4 text-xs text-amber-200/90">
-        <div className="mb-2 font-semibold text-amber-300">Still pending per the global rule</div>
-        Profile + password + sign-out are live. Still missing: avatar uploader (needs Supabase
-        Storage bucket); delete-account flow with confirm-by-typing-email; sign-out-everywhere
-        (revoke all refresh tokens — Supabase admin call). Returning in a follow-up.
-        <div className="mt-2">
-          <Link href="/projects" className="text-amber-300 hover:underline">
-            Back to projects →
-          </Link>
-        </div>
-      </section>
+      {/* Danger zone — delete account */}
+      {user?.email && (
+        <section className="mt-6 rounded-2xl border border-red-500/20 bg-red-500/5 p-6">
+          <div className="mb-3 text-sm font-semibold text-red-300">Danger zone</div>
+          <DeleteAccount email={user.email} />
+        </section>
+      )}
+
+      <div className="mt-8 text-xs text-gray-500">
+        <Link href="/projects" className="hover:text-emerald-400">
+          ← Back to projects
+        </Link>
+      </div>
     </div>
   );
 }
