@@ -13,6 +13,7 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
 
 interface ResultLine {
+  check_result_id: string;
   outcome: string;
   message: string;
   severity: string;
@@ -350,17 +351,22 @@ async function handleUpload(request: NextRequest, log: LogFn) {
   // Phase 3 — persist + categorise in original row order
   const tPhase3 = Date.now();
   for (const { row, result } of rowResults) {
-    const { error: resultInsertErr } = await db.from('check_results').insert({
-      check_run_id: run.id,
-      register_row_id: row.id,
-      outcome: result.outcome,
-      message: result.message,
-      evidence: result.evidence ?? null,
-      llm_reasoning: result.llm_reasoning ?? null,
-    });
+    const { data: insertedResult, error: resultInsertErr } = await db
+      .from('check_results')
+      .insert({
+        check_run_id: run.id,
+        register_row_id: row.id,
+        outcome: result.outcome,
+        message: result.message,
+        evidence: result.evidence ?? null,
+        llm_reasoning: result.llm_reasoning ?? null,
+      })
+      .select('id')
+      .single();
     if (resultInsertErr) log('check-result-insert-failed', { rowId: row.id, error: resultInsertErr.message });
 
     const line: ResultLine = {
+      check_result_id: insertedResult?.id ?? '',
       outcome: result.outcome,
       message: result.message,
       severity: row.severity,

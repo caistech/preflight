@@ -1,8 +1,10 @@
 'use client';
 
 import { useState } from 'react';
+import { DecisionForm } from './decision-form';
 
 interface Result {
+  check_result_id: string;
   outcome: string;
   message: string;
   severity: string;
@@ -185,14 +187,14 @@ export function DrafterUpload({ token, projectId: _projectId }: { token: string;
               </div>
             )}
           </div>
-          <TriageSheet result={result} />
+          <TriageSheet result={result} token={token} />
         </>
       )}
     </div>
   );
 }
 
-function TriageSheet({ result }: { result: UploadResponse }) {
+function TriageSheet({ result, token }: { result: UploadResponse; token: string }) {
   return (
     <div className="mt-8 space-y-6">
       <div className="rounded-2xl border border-gray-800 bg-gray-900/40 p-6">
@@ -221,19 +223,19 @@ function TriageSheet({ result }: { result: UploadResponse }) {
       </div>
 
       {result.hard_fails.length > 0 && (
-        <Section title="Hard fails" tone="red" rows={result.hard_fails} />
+        <Section title="Hard fails" tone="red" rows={result.hard_fails} token={token} />
       )}
       {result.needs_review.length > 0 && (
-        <Section title="Needs eyes" tone="amber" rows={result.needs_review} />
+        <Section title="Needs eyes" tone="amber" rows={result.needs_review} token={token} />
       )}
       {result.confirmed_ok.length > 0 && (
-        <Section title="Confirmed OK" tone="emerald" rows={result.confirmed_ok} />
+        <Section title="Confirmed OK" tone="emerald" rows={result.confirmed_ok} token={token} />
       )}
     </div>
   );
 }
 
-function Section({ title, tone, rows }: { title: string; tone: string; rows: Result[] }) {
+function Section({ title, tone, rows, token }: { title: string; tone: string; rows: Result[]; token: string }) {
   const toneClasses: Record<string, string> = {
     red: 'border-red-500/30 bg-red-500/10',
     amber: 'border-amber-500/30 bg-amber-500/10',
@@ -253,6 +255,13 @@ function Section({ title, tone, rows }: { title: string; tone: string; rows: Res
             <div className="mb-1 text-sm text-gray-100">{r.requirement}</div>
             <div className="mb-2 text-xs text-gray-400">{r.message}</div>
             <div className="text-xs text-gray-500">Source: {r.source}</div>
+            {r.check_result_id && (
+              <DecisionForm
+                token={token}
+                checkResultId={r.check_result_id}
+                toolOutcome={r.outcome}
+              />
+            )}
           </div>
         ))}
       </div>

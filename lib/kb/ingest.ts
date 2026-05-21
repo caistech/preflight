@@ -21,7 +21,16 @@ const CHUNK_OVERLAP_CHARS = 200;
 export interface IngestInput {
   projectId: string;
   title: string;
-  sourceKind: 'upload' | 'url' | 'drive' | 'inbound-email' | 'planner-letter' | 'council-audit' | 'engineer-note' | 'manual';
+  sourceKind:
+    | 'upload'
+    | 'url'
+    | 'drive'
+    | 'inbound-email'
+    | 'planner-letter'
+    | 'council-audit'
+    | 'engineer-note'
+    | 'manual'
+    | 'operator-decision';
   sourceRef: string | null;
   content: string;
 }

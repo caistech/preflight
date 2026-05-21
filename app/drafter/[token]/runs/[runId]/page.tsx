@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { createServiceClient } from '@/lib/supabase/service';
 import { hashDrafterToken } from '@/lib/drafter-token';
 import { Disclaimer } from '@/components/disclaimer';
+import { DecisionForm } from '../../decision-form';
 
 export const dynamic = 'force-dynamic';
 
@@ -9,12 +10,23 @@ interface Props {
   params: Promise<{ token: string; runId: string }>;
 }
 
+type Decision = 'confirm_finding' | 'overrule_pass' | 'overrule_fail' | 'add_context';
+
+interface ExistingDecision {
+  id: string;
+  decision: Decision;
+  rationale: string;
+  created_at: string;
+}
+
 interface ResultLine {
+  check_result_id: string;
   outcome: string;
   message: string;
   severity: string;
   requirement: string;
   source: string;
+  decision: ExistingDecision | null;
 }
 
 export default async function DrafterRunPage({ params }: Props) {
@@ -88,6 +100,20 @@ export default async function DrafterRunPage({ params }: Props) {
     .select('id, outcome, message, evidence, register_rows(requirement, source, severity)')
     .eq('check_run_id', runId);
 
+  const { data: decisionRows } = await db
+    .from('check_result_decisions')
+    .select('id, check_result_id, decision, rationale, created_at')
+    .eq('check_run_id', runId);
+  const decisionsByResult = new Map<string, ExistingDecision>();
+  for (const d of decisionRows ?? []) {
+    decisionsByResult.set(d.check_result_id, {
+      id: d.id,
+      decision: d.decision as Decision,
+      rationale: d.rationale,
+      created_at: d.created_at,
+    });
+  }
+
   const hardFails: ResultLine[] = [];
   const needsReview: ResultLine[] = [];
   const confirmedOk: ResultLine[] = [];
@@ -98,11 +124,13 @@ export default async function DrafterRunPage({ params }: Props) {
       severity?: string;
     };
     const line: ResultLine = {
+      check_result_id: r.id,
       outcome: r.outcome,
       message: r.message ?? '',
       severity: reg.severity ?? 'review',
       requirement: reg.requirement ?? '',
       source: reg.source ?? '',
+      decision: decisionsByResult.get(r.id) ?? null,
     };
     if (r.outcome === 'fail' && reg.severity === 'hard-fail') hardFails.push(line);
     else if (r.outcome === 'fail' || r.outcome === 'unsure') needsReview.push(line);
@@ -149,13 +177,13 @@ export default async function DrafterRunPage({ params }: Props) {
         </div>
 
         {hardFails.length > 0 && (
-          <Section title="🔴 Hard fails — fix before submission" lines={hardFails} tone="red" />
+          <Section title="🔴 Hard fails — fix before submission" lines={hardFails} tone="red" token={token} />
         )}
         {needsReview.length > 0 && (
-          <Section title="🟡 Needs eyes — read and decide" lines={needsReview} tone="amber" />
+          <Section title="🟡 Needs eyes — read and decide" lines={needsReview} tone="amber" token={token} />
         )}
         {confirmedOk.length > 0 && (
-          <Section title="✅ Confirmed OK" lines={confirmedOk} tone="emerald" collapsible />
+          <Section title="✅ Confirmed OK" lines={confirmedOk} tone="emerald" collapsible token={token} />
         )}
 
         {hardFails.length + needsReview.length + confirmedOk.length === 0 && (
@@ -175,11 +203,13 @@ function Section({
   title,
   lines,
   tone,
+  token,
   collapsible,
 }: {
   title: string;
   lines: ResultLine[];
   tone: 'red' | 'amber' | 'emerald';
+  token: string;
   collapsible?: boolean;
 }) {
   const borderClass =
@@ -194,11 +224,19 @@ function Section({
         <span className="text-xs font-normal text-gray-500">({lines.length})</span>
       </summary>
       <div className="space-y-2 px-5 pb-5">
-        {lines.map((l, i) => (
-          <div key={i} className="rounded-lg border border-gray-800 bg-gray-950/60 p-4 text-sm">
+        {lines.map((l) => (
+          <div key={l.check_result_id} className="rounded-lg border border-gray-800 bg-gray-950/60 p-4 text-sm">
             <div className="mb-1 text-gray-100">{l.requirement}</div>
             <div className="mb-2 text-xs text-gray-400">{l.message}</div>
             <div className="text-xs text-gray-500">Source: {l.source}</div>
+            {l.check_result_id && (
+              <DecisionForm
+                token={token}
+                checkResultId={l.check_result_id}
+                toolOutcome={l.outcome}
+                existingDecision={l.decision}
+              />
+            )}
           </div>
         ))}
       </div>
