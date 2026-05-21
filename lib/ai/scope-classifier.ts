@@ -61,6 +61,10 @@ export interface ProposeScopeInput {
   /** Known facts about the owning project, so the classifier can reason
    *  about what an applies_when filter would mean. */
   projectFacts: Record<string, string>;
+  /** Bypass the operator-decision source-kind skip. Used by the operator
+   *  review path when review=promote_to_rule signals explicit cross-project
+   *  intent. */
+  forceClassify?: boolean;
 }
 
 export interface ProposeScopeResult {
@@ -79,12 +83,12 @@ export async function proposeScopeForDocument(
   const warnings: string[] = [];
   const content = input.documentContent.slice(0, MAX_CONTENT_CHARS);
 
-  // Operator-decision docs are a special case — they capture a per-item
-  // judgement that's by definition project-specific UNLESS the operator
-  // explicitly promotes (in the review form, via promote_to_rule). Skip
-  // auto-classification for these to avoid noise.
-  if (input.documentSourceKind === 'operator-decision') {
-    return { inserted: false, warnings: ['operator-decision docs skip auto-scope-classify'] };
+  // Operator-decision docs skip auto-classification by default (most are
+  // per-item judgments specific to one project). The operator review path
+  // overrides this when review=promote_to_rule signals explicit cross-
+  // project intent.
+  if (input.documentSourceKind === 'operator-decision' && !input.forceClassify) {
+    return { inserted: false, warnings: ['operator-decision docs skip auto-scope-classify (use forceClassify to override)'] };
   }
 
   const factsBlock = Object.keys(input.projectFacts).length

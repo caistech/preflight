@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateAndGetDb } from '@/lib/supabase/auth';
 import { resolveProjectId } from '@/lib/project-resolver';
+import { proposeFactsFromDocument } from '@/lib/ai/facts-proposer';
 
 export const dynamic = 'force-dynamic';
+export const maxDuration = 120;
 
 /**
  * PATCH resolves a kb scope proposal: approve → updates kb_documents.scope
@@ -63,6 +65,25 @@ export async function PATCH(
       })
       .eq('id', proposal.kb_document_id);
     if (updDocErr) return NextResponse.json({ error: `Could not update document scope: ${updDocErr.message}` }, { status: 500 });
+
+    // Cross-project propagation. When a doc gets promoted above project
+    // scope, fan out the facts proposer to every sibling project that
+    // matches the scope — each sibling gets candidate facts on its own
+    // panel scoped to that sibling's existing facts. Operator approves
+    // per-sibling, keeping the human-in-the-loop guardrail.
+    if (finalScope === 'cross-project' || finalScope === 'general') {
+      try {
+        await propagateToSiblings(db, {
+          sourceProjectId: projectId,
+          kbDocumentId: proposal.kb_document_id,
+          scope: finalScope,
+          appliesWhen: finalAppliesWhen,
+        });
+      } catch (e) {
+        // Propagation failure must not block the approval — log and proceed.
+        console.error(`[kb-scope-approve] propagation failed: ${(e as Error).message}`);
+      }
+    }
   }
 
   const { error: updErr } = await db
@@ -91,4 +112,87 @@ export async function PATCH(
   });
 
   return NextResponse.json({ ok: true, action: body.action });
+}
+
+/**
+ * Fan-out the facts proposer to every sibling project that matches the
+ * promoted document's scope. The proposer runs per-sibling so each
+ * sibling's existing facts are considered (avoiding duplicate proposals)
+ * and so the operator approves on a per-project basis.
+ *
+ * For cross-project: a sibling matches when its facts are a superset of
+ * applies_when. For general: every sibling matches.
+ */
+async function propagateToSiblings(
+  db: import('@supabase/supabase-js').SupabaseClient,
+  args: {
+    sourceProjectId: string;
+    kbDocumentId: string;
+    scope: 'cross-project' | 'general';
+    appliesWhen: Record<string, string> | null;
+  },
+) {
+  // Load the doc once so the proposer can run on its content.
+  const { data: doc } = await db
+    .from('kb_documents')
+    .select('id, title, content')
+    .eq('id', args.kbDocumentId)
+    .single();
+  if (!doc || !doc.content) return;
+
+  // Load every project's facts in one query then build a per-project map.
+  const { data: allFactRows } = await db
+    .from('project_facts')
+    .select('project_id, key, value');
+  const factsByProject = new Map<string, Record<string, string>>();
+  for (const f of allFactRows ?? []) {
+    if (!factsByProject.has(f.project_id)) factsByProject.set(f.project_id, {});
+    factsByProject.get(f.project_id)![f.key] = f.value;
+  }
+
+  // Resolve the candidate sibling list.
+  const { data: allProjects } = await db.from('projects').select('id');
+  const candidates: Array<{ id: string; facts: Record<string, string> }> = [];
+  for (const p of allProjects ?? []) {
+    if (p.id === args.sourceProjectId) continue;
+    const facts = factsByProject.get(p.id) ?? {};
+    if (args.scope === 'general') {
+      candidates.push({ id: p.id, facts });
+    } else if (args.scope === 'cross-project' && args.appliesWhen) {
+      const matches = Object.entries(args.appliesWhen).every(([k, v]) => facts[k] === v);
+      if (matches) candidates.push({ id: p.id, facts });
+    }
+  }
+
+  if (candidates.length === 0) return;
+
+  // Fire all sibling proposer calls in parallel. Each writes its own
+  // fact_candidates rows on that sibling; failures are local to that
+  // sibling and don't sink the rest.
+  await Promise.all(
+    candidates.map((sibling) =>
+      proposeFactsFromDocument(db, {
+        documentId: args.kbDocumentId,
+        projectId: sibling.id,
+        documentTitle: doc.title ?? '(untitled)',
+        documentContent: doc.content,
+        existingFacts: sibling.facts,
+      }).catch((e) => {
+        console.error(`[kb-scope-approve] sibling ${sibling.id} proposer failed: ${(e as Error).message}`);
+      }),
+    ),
+  );
+
+  // Audit-log a single fan-out summary on the source project.
+  await db.from('audit_log').insert({
+    project_id: args.sourceProjectId,
+    actor_id: null,
+    action: 'kb_scope_propagated',
+    payload: {
+      kb_document_id: args.kbDocumentId,
+      scope: args.scope,
+      applies_when: args.appliesWhen,
+      sibling_project_ids: candidates.map((c) => c.id),
+    },
+  });
 }

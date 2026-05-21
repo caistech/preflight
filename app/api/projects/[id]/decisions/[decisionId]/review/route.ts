@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { authenticateAndGetDb } from '@/lib/supabase/auth';
 import { resolveProjectId } from '@/lib/project-resolver';
 import { ingestKbDocument } from '@/lib/kb/ingest';
+import { proposeScopeForDocument } from '@/lib/ai/scope-classifier';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -99,6 +100,39 @@ export async function POST(
       .from('check_result_decisions')
       .update({ operator_review_kb_document_id: kbDocumentId })
       .eq('id', decisionId);
+
+    // promote_to_rule explicitly signals cross-project intent — force-run
+    // the scope classifier so the operator gets a cross-project / general
+    // proposal to approve. Without this, operator-decision docs are
+    // project-scoped by default and the propagation never starts.
+    if (review === 'promote_to_rule') {
+      try {
+        const { data: factRows } = await db
+          .from('project_facts')
+          .select('key, value')
+          .eq('project_id', projectId);
+        const projectFacts: Record<string, string> = {};
+        for (const f of factRows ?? []) projectFacts[f.key] = f.value;
+
+        await proposeScopeForDocument(db, {
+          documentId: kbDocumentId,
+          projectId,
+          documentTitle: `Operator review — ${(reg?.requirement ?? 'unknown rule').slice(0, 80)}`,
+          documentSourceKind: 'operator-decision',
+          documentContent: [
+            `Rule: ${reg?.requirement ?? ''}`,
+            `Drafter decision: ${decision.decision}`,
+            `Drafter rationale: ${decision.rationale}`,
+            `Operator chose: promote_to_rule`,
+            `Operator rationale: ${rationale}`,
+          ].join('\n\n'),
+          projectFacts,
+          forceClassify: true,
+        });
+      } catch (e) {
+        console.error(`[operator-review] force-classify failed: ${(e as Error).message}`);
+      }
+    }
   } catch (e) {
     console.error(`[operator-review] KB feedback failed: ${(e as Error).message}`);
   }
