@@ -6,6 +6,7 @@ import { SourcesPanel } from './sources-panel';
 import { FactCandidatesPanel } from './fact-candidates-panel';
 import { KbScopePanel } from './kb-scope-panel';
 import { UnitsPanel } from './units-panel';
+import { RuleCandidatesPanel } from './rule-candidates-panel';
 import { AddressEditor } from './address-editor';
 import { AddRuleForm } from './add-rule-form';
 import { Disclaimer } from '@/components/disclaimer';
@@ -268,6 +269,11 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
       {/* Per-unit specs — typed table the unit-numbering rule can query. */}
       <div className="mt-6">
         <UnitsPanel projectId={id} />
+      </div>
+
+      {/* LLM-proposed register rows from cross-project promote_to_rule decisions. */}
+      <div className="mt-6">
+        <RuleCandidatesPanel projectId={id} />
       </div>
 
       {/* Requirements register */}

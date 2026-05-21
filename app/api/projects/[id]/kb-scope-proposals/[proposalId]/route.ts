@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { authenticateAndGetDb } from '@/lib/supabase/auth';
 import { resolveProjectId } from '@/lib/project-resolver';
 import { proposeFactsFromDocument } from '@/lib/ai/facts-proposer';
+import { proposeRuleFromDecision } from '@/lib/ai/rule-proposer';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 120;
@@ -132,13 +133,24 @@ async function propagateToSiblings(
     appliesWhen: Record<string, string> | null;
   },
 ) {
-  // Load the doc once so the proposer can run on its content.
+  // Load the doc once so both proposers can run on its content.
   const { data: doc } = await db
     .from('kb_documents')
-    .select('id, title, content')
+    .select('id, title, content, source_kind, source_ref')
     .eq('id', args.kbDocumentId)
     .single();
   if (!doc || !doc.content) return;
+
+  // For operator-decision docs created from a promote_to_rule review, the
+  // source_ref carries "review:<decision_id>" — we use this to backlink
+  // candidate register_rows to the originating decision. For other docs,
+  // we only fan out facts.
+  let sourceDecisionId: string | null = null;
+  if (doc.source_kind === 'operator-decision' && typeof doc.source_ref === 'string') {
+    const m = doc.source_ref.match(/^review:([0-9a-f-]{36})$/i);
+    if (m) sourceDecisionId = m[1];
+  }
+  const isPromoteToRuleDoc = sourceDecisionId !== null;
 
   // Load every project's facts in one query then build a per-project map.
   const { data: allFactRows } = await db
@@ -166,24 +178,42 @@ async function propagateToSiblings(
 
   if (candidates.length === 0) return;
 
-  // Fire all sibling proposer calls in parallel. Each writes its own
-  // fact_candidates rows on that sibling; failures are local to that
-  // sibling and don't sink the rest.
+  // Fan out per sibling. Always run the facts proposer. Additionally, for
+  // promote_to_rule-derived docs, also run the rule proposer so each
+  // sibling gets a register_row candidate alongside the facts.
   await Promise.all(
-    candidates.map((sibling) =>
-      proposeFactsFromDocument(db, {
-        documentId: args.kbDocumentId,
-        projectId: sibling.id,
-        documentTitle: doc.title ?? '(untitled)',
-        documentContent: doc.content,
-        existingFacts: sibling.facts,
-      }).catch((e) => {
-        console.error(`[kb-scope-approve] sibling ${sibling.id} proposer failed: ${(e as Error).message}`);
-      }),
-    ),
+    candidates.flatMap((sibling) => {
+      const tasks: Array<Promise<unknown>> = [];
+      tasks.push(
+        proposeFactsFromDocument(db, {
+          documentId: args.kbDocumentId,
+          projectId: sibling.id,
+          documentTitle: doc.title ?? '(untitled)',
+          documentContent: doc.content,
+          existingFacts: sibling.facts,
+        }).catch((e) => {
+          console.error(`[kb-scope-approve] sibling ${sibling.id} facts-proposer failed: ${(e as Error).message}`);
+        }),
+      );
+      if (isPromoteToRuleDoc) {
+        tasks.push(
+          proposeRuleFromDecision(db, {
+            documentId: args.kbDocumentId,
+            projectId: sibling.id,
+            sourceProjectId: args.sourceProjectId,
+            sourceDecisionId,
+            documentTitle: doc.title ?? '(untitled)',
+            documentContent: doc.content,
+            projectFacts: sibling.facts,
+          }).catch((e) => {
+            console.error(`[kb-scope-approve] sibling ${sibling.id} rule-proposer failed: ${(e as Error).message}`);
+          }),
+        );
+      }
+      return tasks;
+    }),
   );
 
-  // Audit-log a single fan-out summary on the source project.
   await db.from('audit_log').insert({
     project_id: args.sourceProjectId,
     actor_id: null,
@@ -193,6 +223,8 @@ async function propagateToSiblings(
       scope: args.scope,
       applies_when: args.appliesWhen,
       sibling_project_ids: candidates.map((c) => c.id),
+      included_rule_proposer: isPromoteToRuleDoc,
+      source_decision_id: sourceDecisionId,
     },
   });
 }
