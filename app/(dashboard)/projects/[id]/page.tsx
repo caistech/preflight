@@ -7,6 +7,7 @@ import { FactCandidatesPanel } from './fact-candidates-panel';
 import { KbScopePanel } from './kb-scope-panel';
 import { UnitsPanel } from './units-panel';
 import { RuleCandidatesPanel } from './rule-candidates-panel';
+import { MembersPanel } from './members-panel';
 import { AddressEditor } from './address-editor';
 import { AddRuleForm } from './add-rule-form';
 import { Disclaimer } from '@/components/disclaimer';
@@ -274,6 +275,11 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
       {/* LLM-proposed register rows from cross-project promote_to_rule decisions. */}
       <div className="mt-6">
         <RuleCandidatesPanel projectId={id} />
+      </div>
+
+      {/* Project members — operator invite + role management. */}
+      <div className="mt-6">
+        <MembersPanel projectId={id} />
       </div>
 
       {/* Requirements register */}

@@ -50,15 +50,23 @@ export default async function ProjectsPage() {
         here.
       </p>
 
-      <Link
-        href="/reviews"
-        className="mb-8 inline-flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300 hover:border-amber-500 hover:bg-amber-500/20"
-      >
-        <span>Pending decision reviews</span>
-        <span className="rounded-full bg-amber-500/20 px-2 py-0.5 font-mono text-amber-200">
-          {reviewCount}
-        </span>
-      </Link>
+      <div className="mb-8 flex flex-wrap items-center gap-3">
+        <Link
+          href="/projects/new"
+          className="inline-flex items-center gap-2 rounded-lg bg-emerald-500 px-3 py-2 text-sm font-medium text-gray-950 hover:bg-emerald-400"
+        >
+          + New project
+        </Link>
+        <Link
+          href="/reviews"
+          className="inline-flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300 hover:border-amber-500 hover:bg-amber-500/20"
+        >
+          <span>Pending decision reviews</span>
+          <span className="rounded-full bg-amber-500/20 px-2 py-0.5 font-mono text-amber-200">
+            {reviewCount}
+          </span>
+        </Link>
+      </div>
 
       {projects.length === 0 ? (
         <div className="rounded-2xl border border-gray-800 bg-gray-900/30 p-10 text-center text-gray-400">
