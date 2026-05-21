@@ -11,12 +11,19 @@ interface Props {
 }
 
 type Decision = 'confirm_finding' | 'overrule_pass' | 'overrule_fail' | 'add_context';
+type OperatorReview = 'agree' | 'disagree_overrule' | 'promote_to_rule' | 'add_more_context';
 
 interface ExistingDecision {
   id: string;
   decision: Decision;
   rationale: string;
   created_at: string;
+}
+
+interface ExistingOperatorReview {
+  review: OperatorReview;
+  rationale: string;
+  reviewed_at: string;
 }
 
 interface ResultLine {
@@ -27,6 +34,7 @@ interface ResultLine {
   requirement: string;
   source: string;
   decision: ExistingDecision | null;
+  operatorReview: ExistingOperatorReview | null;
 }
 
 export default async function DrafterRunPage({ params }: Props) {
@@ -102,9 +110,10 @@ export default async function DrafterRunPage({ params }: Props) {
 
   const { data: decisionRows } = await db
     .from('check_result_decisions')
-    .select('id, check_result_id, decision, rationale, created_at')
+    .select('id, check_result_id, decision, rationale, created_at, operator_review, operator_review_rationale, reviewed_at')
     .eq('check_run_id', runId);
   const decisionsByResult = new Map<string, ExistingDecision>();
+  const operatorReviewByResult = new Map<string, ExistingOperatorReview>();
   for (const d of decisionRows ?? []) {
     decisionsByResult.set(d.check_result_id, {
       id: d.id,
@@ -112,6 +121,13 @@ export default async function DrafterRunPage({ params }: Props) {
       rationale: d.rationale,
       created_at: d.created_at,
     });
+    if (d.operator_review) {
+      operatorReviewByResult.set(d.check_result_id, {
+        review: d.operator_review as OperatorReview,
+        rationale: d.operator_review_rationale ?? '',
+        reviewed_at: d.reviewed_at ?? '',
+      });
+    }
   }
 
   const hardFails: ResultLine[] = [];
@@ -131,6 +147,7 @@ export default async function DrafterRunPage({ params }: Props) {
       requirement: reg.requirement ?? '',
       source: reg.source ?? '',
       decision: decisionsByResult.get(r.id) ?? null,
+      operatorReview: operatorReviewByResult.get(r.id) ?? null,
     };
     if (r.outcome === 'fail' && reg.severity === 'hard-fail') hardFails.push(line);
     else if (r.outcome === 'fail' || r.outcome === 'unsure') needsReview.push(line);
@@ -199,6 +216,15 @@ export default async function DrafterRunPage({ params }: Props) {
   );
 }
 
+function operatorReviewLabel(r: OperatorReview): string {
+  switch (r) {
+    case 'agree': return 'agrees with your call';
+    case 'disagree_overrule': return 'overruled your call';
+    case 'promote_to_rule': return 'wants the rule refined based on this';
+    case 'add_more_context': return 'added context';
+  }
+}
+
 function Section({
   title,
   lines,
@@ -229,6 +255,19 @@ function Section({
             <div className="mb-1 text-gray-100">{l.requirement}</div>
             <div className="mb-2 text-xs text-gray-400">{l.message}</div>
             <div className="text-xs text-gray-500">Source: {l.source}</div>
+            {l.operatorReview && (
+              <div className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs">
+                <div className="mb-1 font-semibold text-amber-300">
+                  Project owner reviewed: {operatorReviewLabel(l.operatorReview.review)}
+                </div>
+                <div className="text-amber-200/90">{l.operatorReview.rationale}</div>
+                {l.operatorReview.reviewed_at && (
+                  <div className="mt-1 text-amber-300/60">
+                    {new Date(l.operatorReview.reviewed_at).toLocaleString('en-AU')}
+                  </div>
+                )}
+              </div>
+            )}
             {l.check_result_id && (
               <DecisionForm
                 token={token}
