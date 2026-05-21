@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateAndGetDb } from '@/lib/supabase/auth';
 import { ingestKbDocument } from '@/lib/kb/ingest';
+import { proposeFactsFromDocument } from '@/lib/ai/facts-proposer';
 import { resolveProjectId } from '@/lib/project-resolver';
 
 export const dynamic = 'force-dynamic';
@@ -56,7 +57,25 @@ export async function POST(
       payload: { document_id: result.document_id, source_kind: sourceKind, title, chunk_count: result.chunk_count },
     });
 
-    return NextResponse.json({ ok: true, ...result });
+    let factsResult: Awaited<ReturnType<typeof proposeFactsFromDocument>> | null = null;
+    if (result.chunk_count > 0) {
+      const { data: existingFactRows } = await db.from('project_facts').select('key, value').eq('project_id', projectId);
+      const existingFacts: Record<string, string> = {};
+      for (const f of existingFactRows ?? []) existingFacts[f.key] = f.value;
+      try {
+        factsResult = await proposeFactsFromDocument(db, {
+          documentId: result.document_id,
+          projectId,
+          documentTitle: title,
+          documentContent: content,
+          existingFacts,
+        });
+      } catch (e) {
+        factsResult = { proposed: 0, inserted: 0, rejected_invalid: 0, warnings: [`Proposer threw: ${(e as Error).message}`] };
+      }
+    }
+
+    return NextResponse.json({ ok: true, ...result, fact_candidates: factsResult });
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 500 });
   }

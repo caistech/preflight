@@ -2,6 +2,7 @@ import { createServiceClient } from '@/lib/supabase/service';
 import { resolveProjectId } from '@/lib/project-resolver';
 import { DrafterLinkPanel } from './drafter-link-panel';
 import { SourcesPanel } from './sources-panel';
+import { FactCandidatesPanel } from './fact-candidates-panel';
 import { AddressEditor } from './address-editor';
 import { AddRuleForm } from './add-rule-form';
 import { Disclaimer } from '@/components/disclaimer';
@@ -240,6 +241,12 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
         existingDocs={existingKbDocs}
         recentInbound={recentInbound}
       />
+
+      {/* LLM-proposed facts pending operator approval — loaded client-side
+          so the page renders without blocking on the candidate list */}
+      <div className="mt-6">
+        <FactCandidatesPanel projectId={id} />
+      </div>
 
       {/* Requirements register */}
       <section className="mt-10">
