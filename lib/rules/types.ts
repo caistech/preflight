@@ -82,11 +82,23 @@ export interface ManualCheckSpec {
   when_facts?: Record<string, string>;
 }
 
+export interface ProjectUnit {
+  unit_number: number;
+  unit_type: string | null;
+  area_sqm: number | null;
+  ffl_m: number | null;
+  footing_system: string | null;
+  status: string;
+}
+
 export interface CheckEvaluationInput {
   row: RegisterRow;
   extractedText: string;
   facts: Record<string, string>;
   projectId: string;
+  /** Optional per-unit specs. When present, logic-rules that match a unit list
+   *  use this as the source of truth instead of the `unit_count` fact. */
+  units?: ProjectUnit[];
 }
 
 export interface CheckEvaluationResult {

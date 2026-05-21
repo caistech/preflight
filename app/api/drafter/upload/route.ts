@@ -4,7 +4,7 @@ import { hashDrafterToken } from '@/lib/drafter-token';
 import { extractPdf } from '@/lib/pdf/extract';
 import { evaluateRow } from '@/lib/rules/engine';
 import { runManualCheck } from '@/lib/ai/manual-check';
-import type { RegisterRow, CheckEvaluationResult, ManualCheckSpec } from '@/lib/rules/types';
+import type { RegisterRow, CheckEvaluationResult, ManualCheckSpec, ProjectUnit } from '@/lib/rules/types';
 
 export const dynamic = 'force-dynamic';
 // 300s ceiling so a Lot 442-sized register (many manual-check rules) has room
@@ -147,12 +147,30 @@ async function handleUpload(request: NextRequest, log: LogFn) {
     err: regErr?.message,
   });
 
+  const tUnits = Date.now();
+  log('units-query-start');
+  const { data: unitRows, error: unitErr } = await withTimeout(
+    db
+      .from('project_units')
+      .select('unit_number, unit_type, area_sqm, ffl_m, footing_system, status')
+      .eq('project_id', projectId),
+    10000,
+    'project_units',
+  );
+  log('units-query-done', {
+    ms: Date.now() - tUnits,
+    count: unitRows?.length ?? 0,
+    err: unitErr?.message,
+  });
+
   const facts: Record<string, string> = {};
   for (const f of factRows ?? []) facts[f.key] = f.value;
   const rows = (registerRows ?? []) as RegisterRow[];
+  const units = (unitRows ?? []) as ProjectUnit[];
   log('context-loaded', {
     factCount: Object.keys(facts).length,
     rowCount: rows.length,
+    unitCount: units.length,
   });
 
   // Extract each PDF; concatenate with === FILE === separators so rules can
@@ -263,6 +281,7 @@ async function handleUpload(request: NextRequest, log: LogFn) {
         extractedText: combinedText,
         facts,
         projectId,
+        units,
       });
       if (
         result.outcome === 'unsure' &&

@@ -96,8 +96,23 @@ function evalTextRule(spec: TextRuleSpec, input: CheckEvaluationInput): CheckEva
 function evalLogicRule(spec: LogicRuleSpec, input: CheckEvaluationInput): CheckEvaluationResult {
   switch (spec.logic) {
     case 'unit_numbering_set': {
-      const expected = Number((spec.params?.expected_count as number) ?? 0);
-      if (!expected) return { outcome: 'error', message: 'unit_numbering_set requires expected_count' };
+      // Source of truth: prefer project_units when present (typed table),
+      // fall back to expected_count param (k/v fact path).
+      const useUnits = !!(spec.params?.use_project_units && input.units && input.units.length > 0);
+      const activeUnits = useUnits
+        ? input.units!.filter((u) => u.status === 'active').map((u) => u.unit_number).sort((a, b) => a - b)
+        : null;
+      const expected = useUnits
+        ? (activeUnits!.length)
+        : Number((spec.params?.expected_count as number) ?? 0);
+      if (!expected) {
+        return {
+          outcome: 'error',
+          message: useUnits
+            ? 'unit_numbering_set with use_project_units=true but no active units found'
+            : 'unit_numbering_set requires expected_count or use_project_units=true',
+        };
+      }
 
       // Gate to pages that explicitly carry a letterbox ELEVATION (not just
       // a "letterbox" mention in a site-plan legend). Without this, the rule
@@ -145,9 +160,14 @@ function evalLogicRule(spec: LogicRuleSpec, input: CheckEvaluationInput): CheckE
       }
 
       const found = new Set<number>(Object.keys(counts).map(Number));
+      // When using project_units, missing/extra is measured against the actual
+      // unit_number set (which need not be {1..N} — e.g. ModularWA might
+      // skip 13). When using expected_count, fall back to the contiguous
+      // {1..N} assumption.
+      const expectedSet = useUnits ? new Set<number>(activeUnits!) : new Set<number>(Array.from({ length: expected }, (_, i) => i + 1));
       const missing: number[] = [];
-      for (let i = 1; i <= expected; i++) if (!found.has(i)) missing.push(i);
-      const extra = [...found].filter((n) => n > expected || n < 1);
+      for (const n of expectedSet) if (!found.has(n)) missing.push(n);
+      const extra = [...found].filter((n) => !expectedSet.has(n));
       const duplicates = Object.entries(counts).filter(([, c]) => c > 1).map(([n]) => Number(n));
 
       if (missing.length === 0 && extra.length === 0 && duplicates.length === 0) {
