@@ -44,17 +44,27 @@ export default async function SettingsPage() {
       {/* Sign out */}
       <section className="mt-6 rounded-2xl border border-gray-800 bg-gray-900/40 p-6">
         <div className="mb-3 text-sm font-semibold text-gray-200">Sign out</div>
-        <form action="/api/auth/logout" method="post">
-          <button
-            type="submit"
-            className="rounded-lg border border-gray-700 px-4 py-2 text-sm text-gray-300 hover:border-red-500 hover:text-red-400"
-          >
-            Sign out of this session
-          </button>
-        </form>
+        <div className="flex flex-wrap items-center gap-3">
+          <form action="/api/auth/logout" method="post">
+            <button
+              type="submit"
+              className="rounded-lg border border-gray-700 px-4 py-2 text-sm text-gray-300 hover:border-red-500 hover:text-red-400"
+            >
+              Sign out of this session
+            </button>
+          </form>
+          <form action="/api/settings/logout-everywhere" method="post">
+            <button
+              type="submit"
+              className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-2 text-sm text-red-300 hover:border-red-500 hover:bg-red-500/20"
+              title="Revokes every refresh token for your account — all other devices get booted to /login on their next request."
+            >
+              Sign out everywhere
+            </button>
+          </form>
+        </div>
         <div className="mt-2 text-xs text-gray-500">
-          &ldquo;Sign out everywhere&rdquo; (revoke all refresh tokens) lands when the
-          profiles table arrives.
+          &ldquo;Everywhere&rdquo; revokes every refresh token across all your devices.
         </div>
       </section>
 
