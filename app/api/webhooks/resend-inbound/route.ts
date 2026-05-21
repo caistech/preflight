@@ -53,6 +53,19 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: `Signature verification failed: ${(e as Error).message}` }, { status: 401 });
   }
 
+  interface RawAttachment {
+    filename?: string;
+    name?: string;
+    content_type?: string;
+    contentType?: string;
+    type?: string;
+    content?: string;        // base64
+    content_base64?: string;
+    data?: string;           // base64 (alt provider shape)
+    url?: string;
+    href?: string;
+  }
+
   const envelope = verified as {
     type?: string;
     created_at?: string;
@@ -64,6 +77,7 @@ export async function POST(request: NextRequest) {
       html?: string;
       headers?: Record<string, string>;
       email_id?: string;
+      attachments?: RawAttachment[];
     };
     // some inbound providers put fields at the top level — accept both
     from?: { email?: string; name?: string } | string;
@@ -71,6 +85,7 @@ export async function POST(request: NextRequest) {
     subject?: string;
     text?: string;
     html?: string;
+    attachments?: RawAttachment[];
     id?: string;
     message_id?: string;
   };
@@ -89,6 +104,7 @@ export async function POST(request: NextRequest) {
     text?: string;
     html?: string;
     email_id?: string;
+    attachments?: RawAttachment[];
   };
   const fromRaw = data.from;
   const toRaw = data.to;
@@ -103,11 +119,14 @@ export async function POST(request: NextRequest) {
     `inbound-${Date.now()}`;
 
   // Resend's inbound webhook payload deliberately omits the body — we have to
-  // fetch it via GET /emails/inbound/{email_id} to get text/html. Webhooks
-  // stay small + cheap; full content lives behind a second API call.
+  // fetch it via GET /emails/inbound/{email_id} to get text/html (and the
+  // attachments array). Webhooks stay small + cheap; full content lives
+  // behind a second API call.
   let text = data.text;
   let html = data.html;
-  if ((!text && !html) && data.email_id) {
+  let attachmentsRaw: RawAttachment[] = data.attachments ?? envelope.attachments ?? [];
+
+  if ((!text && !html && attachmentsRaw.length === 0) && data.email_id) {
     const apiKey = process.env.RESEND_API_KEY;
     if (apiKey) {
       try {
@@ -116,9 +135,12 @@ export async function POST(request: NextRequest) {
           signal: AbortSignal.timeout(15000),
         });
         if (r.ok) {
-          const full = (await r.json()) as { text?: string; html?: string };
+          const full = (await r.json()) as { text?: string; html?: string; attachments?: RawAttachment[] };
           text = full.text ?? text;
           html = full.html ?? html;
+          if (Array.isArray(full.attachments) && full.attachments.length > 0) {
+            attachmentsRaw = full.attachments;
+          }
         }
       } catch {
         // body fetch failed — fall through; persist row with empty body so we
@@ -126,6 +148,23 @@ export async function POST(request: NextRequest) {
       }
     }
   }
+
+  // Normalise the various provider shapes into our InboundAttachment shape.
+  const attachments = attachmentsRaw
+    .map((a) => {
+      const filename = (a.filename ?? a.name ?? '').trim();
+      if (!filename) return null;
+      const content_base64 = a.content_base64 ?? a.content ?? a.data;
+      const url = a.url ?? a.href;
+      if (!content_base64 && !url) return null;
+      return {
+        filename,
+        content_type: a.content_type ?? a.contentType ?? a.type,
+        content_base64,
+        url,
+      };
+    })
+    .filter((a): a is NonNullable<typeof a> => a !== null);
 
   const db = createServiceClient();
   const result = await persistInboundEmail(db, {
@@ -135,6 +174,7 @@ export async function POST(request: NextRequest) {
     subject: data.subject,
     text,
     html,
+    attachments,
     raw: envelope,
   });
 
