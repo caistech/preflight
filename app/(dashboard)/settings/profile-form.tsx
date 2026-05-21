@@ -9,6 +9,9 @@ interface Profile {
   company?: string | null;
   job_title?: string | null;
   email_marketing_opt_in?: boolean | null;
+  email_review_queue?: boolean | null;
+  email_weekly_digest?: boolean | null;
+  email_project_alerts?: boolean | null;
 }
 
 export function ProfileForm() {
@@ -68,15 +71,32 @@ export function ProfileForm() {
           <Field label="Job title" value={profile.job_title ?? ''} onChange={(v) => setProfile({ ...profile, job_title: v })} />
         </div>
       </div>
-      <label className="flex items-center gap-2 text-xs text-gray-300">
-        <input
-          type="checkbox"
-          checked={!!profile.email_marketing_opt_in}
-          onChange={(e) => setProfile({ ...profile, email_marketing_opt_in: e.target.checked })}
-          className="accent-emerald-500"
+      <div className="space-y-2 rounded-lg border border-gray-800 bg-gray-950/40 p-3 text-xs text-gray-300">
+        <div className="text-gray-400">Notifications</div>
+        <Toggle
+          checked={profile.email_project_alerts !== false}
+          onChange={(v) => setProfile({ ...profile, email_project_alerts: v })}
+          label="Project alerts (hard-fails, cron failures, deploy issues)"
         />
-        Send me product updates and announcements (transactional emails always sent regardless).
-      </label>
+        <Toggle
+          checked={profile.email_review_queue !== false}
+          onChange={(v) => setProfile({ ...profile, email_review_queue: v })}
+          label="Review-queue digest (drafter decisions awaiting your review)"
+        />
+        <Toggle
+          checked={profile.email_weekly_digest !== false}
+          onChange={(v) => setProfile({ ...profile, email_weekly_digest: v })}
+          label="Weekly digest — Monday morning roll-up"
+        />
+        <Toggle
+          checked={!!profile.email_marketing_opt_in}
+          onChange={(v) => setProfile({ ...profile, email_marketing_opt_in: v })}
+          label="Product updates and announcements (off by default)"
+        />
+        <div className="pt-1 text-gray-500">
+          Transactional emails (sign-in, password reset, drafter invitations) are sent regardless.
+        </div>
+      </div>
       {message && (
         <div className={`rounded-lg border p-2 text-xs ${message.tone === 'ok' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300' : 'border-red-500/30 bg-red-500/10 text-red-300'}`}>
           {message.text}
@@ -90,6 +110,28 @@ export function ProfileForm() {
         {busy ? 'Saving…' : 'Save profile'}
       </button>
     </form>
+  );
+}
+
+function Toggle({
+  checked,
+  onChange,
+  label,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  label: string;
+}) {
+  return (
+    <label className="flex cursor-pointer items-start gap-2">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="mt-0.5 accent-emerald-500"
+      />
+      <span>{label}</span>
+    </label>
   );
 }
 

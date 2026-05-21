@@ -30,14 +30,18 @@ export async function PATCH(request: NextRequest) {
     return v;
   };
 
+  const bool = (v: unknown) => (typeof v === 'boolean' ? v : null);
+
   const { error } = await supabase.rpc('update_my_profile', {
     p_first_name: norm(body.first_name),
     p_last_name: norm(body.last_name),
     p_phone: norm(body.phone),
     p_company: norm(body.company),
     p_job_title: norm(body.job_title),
-    p_email_marketing_opt_in:
-      typeof body.email_marketing_opt_in === 'boolean' ? body.email_marketing_opt_in : null,
+    p_email_marketing_opt_in: bool(body.email_marketing_opt_in),
+    p_email_review_queue: bool(body.email_review_queue),
+    p_email_weekly_digest: bool(body.email_weekly_digest),
+    p_email_project_alerts: bool(body.email_project_alerts),
   });
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ ok: true });
