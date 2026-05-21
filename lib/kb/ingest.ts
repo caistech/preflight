@@ -12,6 +12,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { proposeFactsFromDocument } from '@/lib/ai/facts-proposer';
+import { proposeScopeForDocument } from '@/lib/ai/scope-classifier';
 
 const OPENAI_EMBED_MODEL = 'text-embedding-3-small';
 const OPENAI_EMBED_DIM = 1536;
@@ -46,12 +47,21 @@ export interface IngestResult {
     rejected_invalid: number;
     warnings: string[];
   };
+  /** Populated when the scope classifier ran (any path). inserted=false
+   *  when the LLM proposed 'project' (default — no operator action needed). */
+  scope_proposal?: {
+    inserted: boolean;
+    proposed_scope?: 'project' | 'cross-project' | 'general';
+    confidence?: number;
+    warnings: string[];
+  };
 }
 
 export interface IngestOptions {
-  /** Skip the LLM facts proposer pass. Default false. Use for re-ingest
-   *  scripts or bulk imports where you don't want N proposer calls. */
+  /** Skip the LLM facts proposer pass. Default false. */
   skipFactsProposer?: boolean;
+  /** Skip the LLM scope classifier pass. Default false. */
+  skipScopeClassifier?: boolean;
 }
 
 export async function ingestKbDocument(
@@ -119,33 +129,64 @@ export async function ingestKbDocument(
     warnings.push('No embeddings produced — chunks not persisted');
   }
 
-  // Fire the facts proposer pass once the document is durable. Failures are
-  // captured as warnings — the proposer NEVER blocks the ingest. Skip when
-  // the caller asks (bulk imports, scripts).
+  // Fire facts proposer + scope classifier in parallel once the document is
+  // durable. Both are warnings-on-failure; neither blocks the ingest.
   let factsResult: IngestResult['fact_candidates'] | undefined;
-  if (!options.skipFactsProposer && chunks.length > 0) {
+  let scopeResult: IngestResult['scope_proposal'] | undefined;
+
+  if (chunks.length > 0) {
     const { data: existingFactRows } = await db
       .from('project_facts')
       .select('key, value')
       .eq('project_id', input.projectId);
     const existingFacts: Record<string, string> = {};
     for (const f of existingFactRows ?? []) existingFacts[f.key] = f.value;
-    try {
-      factsResult = await proposeFactsFromDocument(db, {
-        documentId: doc.id,
-        projectId: input.projectId,
-        documentTitle: input.title,
-        documentContent: trimmed,
-        existingFacts,
-      });
-    } catch (e) {
-      factsResult = {
-        proposed: 0,
-        inserted: 0,
-        rejected_invalid: 0,
-        warnings: [`Proposer threw: ${(e as Error).message}`],
-      };
+
+    const tasks: Array<Promise<unknown>> = [];
+    if (!options.skipFactsProposer) {
+      tasks.push(
+        proposeFactsFromDocument(db, {
+          documentId: doc.id,
+          projectId: input.projectId,
+          documentTitle: input.title,
+          documentContent: trimmed,
+          existingFacts,
+        })
+          .then((r) => { factsResult = r; })
+          .catch((e) => {
+            factsResult = {
+              proposed: 0,
+              inserted: 0,
+              rejected_invalid: 0,
+              warnings: [`Proposer threw: ${(e as Error).message}`],
+            };
+          }),
+      );
     }
+    if (!options.skipScopeClassifier) {
+      tasks.push(
+        proposeScopeForDocument(db, {
+          documentId: doc.id,
+          projectId: input.projectId,
+          documentTitle: input.title,
+          documentSourceKind: input.sourceKind,
+          documentContent: trimmed,
+          projectFacts: existingFacts,
+        })
+          .then((r) => {
+            scopeResult = {
+              inserted: r.inserted,
+              proposed_scope: r.proposal?.proposed_scope,
+              confidence: r.proposal?.confidence,
+              warnings: r.warnings,
+            };
+          })
+          .catch((e) => {
+            scopeResult = { inserted: false, warnings: [`Classifier threw: ${(e as Error).message}`] };
+          }),
+      );
+    }
+    await Promise.all(tasks);
   }
 
   return {
@@ -153,6 +194,7 @@ export async function ingestKbDocument(
     chunk_count: chunks.length,
     warnings,
     fact_candidates: factsResult,
+    scope_proposal: scopeResult,
   };
 }
 

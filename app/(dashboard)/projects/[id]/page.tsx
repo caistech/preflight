@@ -4,6 +4,7 @@ import { resolveProjectId } from '@/lib/project-resolver';
 import { DrafterLinkPanel } from './drafter-link-panel';
 import { SourcesPanel } from './sources-panel';
 import { FactCandidatesPanel } from './fact-candidates-panel';
+import { KbScopePanel } from './kb-scope-panel';
 import { AddressEditor } from './address-editor';
 import { AddRuleForm } from './add-rule-form';
 import { Disclaimer } from '@/components/disclaimer';
@@ -256,6 +257,11 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
           so the page renders without blocking on the candidate list */}
       <div className="mt-6">
         <FactCandidatesPanel projectId={id} />
+      </div>
+
+      {/* LLM-proposed KB scope upgrades pending operator approval. */}
+      <div className="mt-6">
+        <KbScopePanel projectId={id} />
       </div>
 
       {/* Requirements register */}
