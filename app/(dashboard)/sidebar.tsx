@@ -16,10 +16,11 @@ interface NavItem {
 
 interface Props {
   email: string | null;
+  avatarUrl: string | null;
   pendingReviewCount: number;
 }
 
-export function Sidebar({ email, pendingReviewCount }: Props) {
+export function Sidebar({ email, avatarUrl, pendingReviewCount }: Props) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const pathname = usePathname();
 
@@ -70,7 +71,23 @@ export function Sidebar({ email, pendingReviewCount }: Props) {
 
       <div className="mt-auto border-t border-gray-800 px-2 py-3">
         {email && (
-          <div className="mb-2 px-3 text-xs text-gray-500" title={email}>
+          <div className="mb-2 flex items-center gap-2 px-3 text-xs text-gray-500" title={email}>
+            {avatarUrl && (
+              <div className="relative h-7 w-7 shrink-0 overflow-hidden rounded-full border border-gray-700 bg-gray-800">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={avatarUrl}
+                  alt=""
+                  className="h-full w-full object-cover"
+                  onError={(e) => {
+                    (e.currentTarget as HTMLImageElement).style.display = 'none';
+                  }}
+                />
+                <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-[10px] font-semibold text-gray-400">
+                  {(email[0] ?? '?').toUpperCase()}
+                </div>
+              </div>
+            )}
             <span className="block truncate">{email}</span>
           </div>
         )}

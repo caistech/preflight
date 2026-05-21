@@ -21,9 +21,18 @@ export default async function DashboardLayout({ children }: { children: React.Re
     pendingReviewCount = count ?? 0;
   }
 
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? '';
+  const avatarUrl = user && supabaseUrl
+    ? `${supabaseUrl}/storage/v1/object/public/avatars/${user.id}`
+    : null;
+
   return (
     <div className="min-h-screen bg-gray-950 text-white">
-      <Sidebar email={user?.email ?? null} pendingReviewCount={pendingReviewCount} />
+      <Sidebar
+        email={user?.email ?? null}
+        avatarUrl={avatarUrl}
+        pendingReviewCount={pendingReviewCount}
+      />
       {/* Reserve room for the fixed left rail on md+ */}
       <main className="md:pl-60">{children}</main>
     </div>

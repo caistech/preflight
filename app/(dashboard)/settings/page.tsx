@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { PasswordForm } from './password-form';
 import { ProfileForm } from './profile-form';
+import { AvatarForm } from './avatar-form';
 import { ConnectedServicesPanel } from './connected-services';
 
 export const dynamic = 'force-dynamic';
@@ -9,6 +10,9 @@ export const dynamic = 'force-dynamic';
 export default async function SettingsPage() {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
+
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? '';
+  const avatarBaseUrl = supabaseUrl ? `${supabaseUrl}/storage/v1/object/public/avatars` : '';
 
   return (
     <div className="mx-auto max-w-3xl px-6 py-10">
@@ -20,12 +24,16 @@ export default async function SettingsPage() {
         env vars; a credentials UI lands in a follow-up.
       </p>
 
-      {/* Identity */}
+      {/* Identity + avatar */}
       <section className="rounded-2xl border border-gray-800 bg-gray-900/40 p-6">
-        <div className="mb-2 text-xs uppercase tracking-wide text-gray-500">Signed in as</div>
-        <div className="text-sm text-gray-100">{user?.email ?? 'unknown'}</div>
-        <div className="mt-1 text-xs text-gray-500">
-          Email lives on auth.users — change it via the magic-link flow (Forgot password →
+        <div className="mb-3 text-xs uppercase tracking-wide text-gray-500">Signed in as</div>
+        {user && avatarBaseUrl ? (
+          <AvatarForm userId={user.id} email={user.email ?? ''} avatarBaseUrl={avatarBaseUrl} />
+        ) : (
+          <div className="text-sm text-gray-100">{user?.email ?? 'unknown'}</div>
+        )}
+        <div className="mt-3 text-xs text-gray-500">
+          {user?.email}{' · '}email lives on auth.users — change it via the magic-link flow (Forgot password →
           Update email). Profile fields below are stored in public.profiles.
         </div>
       </section>
