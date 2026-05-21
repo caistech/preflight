@@ -20,7 +20,6 @@ import { google } from 'googleapis';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { extractFile } from '@/lib/ingest/extract-file';
 import { ingestKbDocument } from '@/lib/kb/ingest';
-import { anthropic, MODEL_HAIKU } from '@/lib/ai/anthropic';
 
 export function getOAuthClient() {
   const clientId = process.env.GOOGLE_CLIENT_ID;
@@ -218,19 +217,11 @@ export async function syncDriveForProject(
         continue;
       }
 
-      const extracted = await extractFile(extractFilename, extractMime, buf);
-      let content = extracted.text.trim();
-
-      // OCR fallback for image-only PDFs — kept Drive-specific because OCR
-      // is expensive and we don't want every ingest path to pay for it.
-      if (f.mimeType === 'application/pdf' && (!content || content.length < 50)) {
-        try {
-          content = (await ocrPdfWithClaude(buf)).trim();
-        } catch (e) {
-          result.errors.push({ file: f.displayName, reason: `pdfjs extracted too little (${content.length} chars); OCR fallback also failed: ${(e as Error).message}` });
-          continue;
-        }
-      }
+      // OCR fallback is now in extractFile() behind enableOcr — Drive
+      // opts in for image-only PDFs (and any other PDF the text layer
+      // can't handle). Same Claude Haiku helper everyone else uses.
+      const extracted = await extractFile(extractFilename, extractMime, buf, { enableOcr: true });
+      const content = extracted.text.trim();
 
       if (!content || content.length < 30) {
         result.errors.push({
@@ -309,39 +300,6 @@ async function enumerateFolderRecursive(
   return files;
 }
 
-/**
- * OCR fallback — when pdfjs returns too little text for a PDF (i.e. it's a
- * scanned image), use Claude's native PDF document support to extract text.
- * Cheap on Haiku, no canvas/Tesseract needed.
- */
-async function ocrPdfWithClaude(buf: Buffer): Promise<string> {
-  const base64 = buf.toString('base64');
-  try {
-    const msg = await anthropic().messages.create({
-      model: MODEL_HAIKU, // Haiku for OCR cost — image-only PDFs only fall here
-      max_tokens: 4000,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'document',
-              source: { type: 'base64', media_type: 'application/pdf', data: base64 },
-            },
-            {
-              type: 'text',
-              text: 'Extract all readable text from this PDF. Return ONLY the extracted text, line by line, no commentary or formatting.',
-            },
-          ],
-        },
-      ],
-    });
-    return msg.content
-      .filter((b) => b.type === 'text')
-      .map((b) => (b as { type: 'text'; text: string }).text)
-      .join('\n');
-  } catch (e) {
-    // Bubble up to caller as zero-length text; caller will error-out the file
-    throw new Error(`OCR fallback failed: ${(e as Error).message}`);
-  }
-}
+// OCR fallback moved to lib/ai/ocr-pdf.ts and routed through
+// extractFile()'s enableOcr option so the same helper serves Drive sync,
+// operator upload, and inbound email attachments uniformly.

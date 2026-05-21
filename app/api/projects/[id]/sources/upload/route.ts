@@ -53,7 +53,7 @@ export async function POST(
   // Extract text. Dispatcher handles pdf / docx / xlsx / csv / txt / md /
   // html and falls back to UTF-8 for unknown types.
   const bytes = Buffer.from(await file.arrayBuffer());
-  const extracted = await extractFile(file.name, file.type, bytes);
+  const extracted = await extractFile(file.name, file.type, bytes, { enableOcr: true });
   // DWG / DXF and other native CAD formats: surface a clear 415 rather
   // than letting the empty extraction fall into the "too little text"
   // bucket. Drafters should export to PDF; the message says so.

@@ -10,6 +10,7 @@
  */
 
 import { extractPdf } from '@/lib/pdf/extract';
+import { ocrPdfWithClaude } from '@/lib/ai/ocr-pdf';
 
 export type ExtractedFormat =
   | 'pdf'
@@ -29,6 +30,22 @@ export interface FileExtractionResult {
   // Surfaced for structured paths (xlsx/csv) so a downstream consumer can
   // re-parse with column awareness without re-uploading the bytes.
   rawBuffer?: Buffer;
+  /** True when the OCR fallback ran (PDF returned <50 chars from the text
+   *  layer AND the caller enabled enableOcr). Surfaced so the operator UI
+   *  can warn "extracted via OCR — verify accuracy". */
+  ocr_used?: boolean;
+}
+
+export interface ExtractFileOptions {
+  /**
+   * When true and the PDF text-extract path produces less than 50 chars,
+   * fall back to Claude Haiku document OCR. Off by default — every PDF
+   * ingest would otherwise pay for OCR when a born-digital extract would
+   * have been free. Callers opt in (operator upload, inbound attachments,
+   * Drive sync). The drafter route does NOT opt in: CAD-PDFs are
+   * born-digital by definition.
+   */
+  enableOcr?: boolean;
 }
 
 const EXTENSION_MAP: Record<string, ExtractedFormat> = {
@@ -70,12 +87,36 @@ export async function extractFile(
   filename: string,
   mimeType: string,
   buffer: Buffer,
+  options: ExtractFileOptions = {},
 ): Promise<FileExtractionResult> {
   const format = detectFormat(filename, mimeType);
 
   switch (format) {
     case 'pdf': {
       const r = await extractPdf(buffer);
+      // OCR fallback when the text-layer extract returned almost nothing
+      // AND the caller opted in. We don't auto-OCR every PDF because most
+      // are born-digital and OCR is expensive — the gate is "the cheap
+      // path failed AND the caller is willing to pay".
+      if (options.enableOcr && (!r.text || r.text.length < 50)) {
+        try {
+          const ocrText = await ocrPdfWithClaude(buffer);
+          if (ocrText && ocrText.trim().length > 50) {
+            return {
+              text: ocrText,
+              format,
+              warnings: [...r.warnings, 'Extracted via Claude OCR fallback — verify accuracy.'],
+              ocr_used: true,
+            };
+          }
+        } catch (e) {
+          return {
+            text: r.text,
+            format,
+            warnings: [...r.warnings, `OCR fallback failed: ${(e as Error).message}`],
+          };
+        }
+      }
       return { text: r.text, format, warnings: r.warnings };
     }
 
