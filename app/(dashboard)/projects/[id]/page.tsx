@@ -5,6 +5,7 @@ import { DrafterLinkPanel } from './drafter-link-panel';
 import { SourcesPanel } from './sources-panel';
 import { FactCandidatesPanel } from './fact-candidates-panel';
 import { KbScopePanel } from './kb-scope-panel';
+import { UnitsPanel } from './units-panel';
 import { AddressEditor } from './address-editor';
 import { AddRuleForm } from './add-rule-form';
 import { Disclaimer } from '@/components/disclaimer';
@@ -262,6 +263,11 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
       {/* LLM-proposed KB scope upgrades pending operator approval. */}
       <div className="mt-6">
         <KbScopePanel projectId={id} />
+      </div>
+
+      {/* Per-unit specs — typed table the unit-numbering rule can query. */}
+      <div className="mt-6">
+        <UnitsPanel projectId={id} />
       </div>
 
       {/* Requirements register */}
