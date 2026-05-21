@@ -89,18 +89,49 @@ async function handleUpload(request: NextRequest, log: LogFn) {
   const projectId = tokenRow.project_id;
   log('token-validated', { projectId, drafterTokenId: tokenRow.id });
 
-  // Load project context: facts + active register rows
-  const [
-    { data: factRows, error: factErr },
-    { data: registerRows, error: regErr },
-  ] = await Promise.all([
+  // Load project context: facts + active register rows.
+  // Run sequentially (not Promise.all) so per-query timing pins down which
+  // one stalls if either does. Each query is wrapped with a 15s timeout
+  // race so a Supabase hang surfaces as a JSON 500 instead of dropping
+  // the TCP connection on Vercel's timeout.
+  const withTimeout = <T>(p: PromiseLike<T>, ms: number, label: string): Promise<T> =>
+    Promise.race<T>([
+      Promise.resolve(p),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`${label} timeout after ${ms}ms`)), ms),
+      ),
+    ]);
+
+  const tFacts = Date.now();
+  log('facts-query-start');
+  const { data: factRows, error: factErr } = await withTimeout(
     db.from('project_facts').select('key, value').eq('project_id', projectId),
+    15000,
+    'project_facts',
+  );
+  log('facts-query-done', {
+    ms: Date.now() - tFacts,
+    count: factRows?.length ?? 0,
+    err: factErr?.message,
+  });
+
+  const tReg = Date.now();
+  log('register-query-start');
+  const { data: registerRows, error: regErr } = await withTimeout(
     db
       .from('register_rows')
       .select('id, project_id, requirement, source, source_url, check_type, check_spec, severity, active')
       .eq('project_id', projectId)
       .eq('active', true),
-  ]);
+    15000,
+    'register_rows',
+  );
+  log('register-query-done', {
+    ms: Date.now() - tReg,
+    count: registerRows?.length ?? 0,
+    bytes: JSON.stringify(registerRows ?? []).length,
+    err: regErr?.message,
+  });
 
   const facts: Record<string, string> = {};
   for (const f of factRows ?? []) facts[f.key] = f.value;
@@ -108,8 +139,6 @@ async function handleUpload(request: NextRequest, log: LogFn) {
   log('context-loaded', {
     factCount: Object.keys(facts).length,
     rowCount: rows.length,
-    factErr: factErr?.message,
-    regErr: regErr?.message,
   });
 
   // Extract each PDF; concatenate with === FILE === separators so rules can
