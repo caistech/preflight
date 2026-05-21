@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { PasswordForm } from './password-form';
 import { ProfileForm } from './profile-form';
+import { ConnectedServicesPanel } from './connected-services';
 
 export const dynamic = 'force-dynamic';
 
@@ -68,18 +69,7 @@ export default async function SettingsPage() {
         </div>
       </section>
 
-      {/* Integrations status */}
-      <section className="mt-6 rounded-2xl border border-gray-800 bg-gray-900/40 p-6 text-sm text-gray-400">
-        <div className="mb-3 font-semibold text-gray-200">Integrations</div>
-        <ul className="space-y-2 text-xs">
-          <li><strong className="text-gray-300">Resend inbound webhook:</strong> wired; text/html body auto-promoted to KB. PDF attachments NOT yet extracted (follow-up).</li>
-          <li><strong className="text-gray-300">Google Drive OAuth + sync:</strong> wired; recursive folder enumeration; PDF / Docs / Sheets / Slides / DOCX / XLSX / TXT / MD; OCR fallback for image-only PDFs via Claude Haiku.</li>
-          <li><strong className="text-gray-300">ElevenLabs voice agent:</strong> deferred per session decision (returning to evaluate relevance per surface).</li>
-          <li><strong className="text-gray-300">PDF extraction:</strong> pdfjs positioned-text (cad-pdf) + pdf-parse fallback live.</li>
-          <li><strong className="text-gray-300">LLM stack:</strong> Sonnet for manual-check + rule proposer; Haiku for facts proposer, scope classifier, OCR fallback.</li>
-          <li><strong className="text-gray-300">KB retrieval (manual-check rules):</strong> scope-aware; pulls project + matching cross-project + general chunks.</li>
-        </ul>
-      </section>
+      <ConnectedServicesPanel />
 
       {/* Honest audit footer — what's still missing per the global rule */}
       <section className="mt-6 rounded-2xl border border-amber-500/30 bg-amber-500/5 p-4 text-xs text-amber-200/90">
