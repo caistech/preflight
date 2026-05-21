@@ -67,11 +67,19 @@ export async function runManualCheck(
     }
   }
 
+  // Honest hint for spatial/geometric rules: PDF text extraction does not
+  // give you 2D coordinates, so distances / radii / positional checks
+  // generally CANNOT be answered from text. The LLM should default to
+  // "unsure" with a clarifying message — never fabricate distances.
+  const geometricHint = spec.requires_geometric_reasoning
+    ? `\n\nIMPORTANT: This rule requires spatial / geometric reasoning (distances, radii, relative positions). The extracted text does NOT carry 2D coordinates — you typically cannot answer "is X at least N mm from Y" reliably. Default to "unsure" and tell the drafter what to check by eye; do not invent measurements.`
+    : '';
+
   const userPrompt = `Project facts:
 ${factsBlock}
 
 Question to answer:
-${spec.prompt}
+${spec.prompt}${geometricHint}
 ${kbBlock}
 
 Relevant extracted-text excerpts from the drawing set:
@@ -230,13 +238,21 @@ async function retrieveKbChunks(
         similarity: typeof r.similarity === 'number' ? r.similarity : 0,
       }));
 
-    // Order: project-scoped first (most specific), then cross-project, then
-    // general. Within each tier, by similarity. The LLM reads top-to-bottom.
-    const tierRank = (s: string) => (s === 'project' ? 0 : s === 'cross-project' ? 1 : 2);
-    chunks.sort((a, b) => {
-      const t = tierRank(a.scope) - tierRank(b.scope);
-      return t !== 0 ? t : b.similarity - a.similarity;
-    });
+    // Order: when kb_rerank_by_tier (default true), project-scoped first
+    // (most specific), then cross-project, then general; by similarity
+    // within each tier. Set false to keep pure cosine-similarity order —
+    // useful when a general doc is genuinely more relevant than a
+    // project-specific one.
+    const rerank = spec.kb_rerank_by_tier !== false;
+    if (rerank) {
+      const tierRank = (s: string) => (s === 'project' ? 0 : s === 'cross-project' ? 1 : 2);
+      chunks.sort((a, b) => {
+        const t = tierRank(a.scope) - tierRank(b.scope);
+        return t !== 0 ? t : b.similarity - a.similarity;
+      });
+    } else {
+      chunks.sort((a, b) => b.similarity - a.similarity);
+    }
     return chunks;
   } catch {
     return [];

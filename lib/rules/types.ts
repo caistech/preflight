@@ -77,9 +77,23 @@ export interface ManualCheckSpec {
   context_hints?: string[];
   /** whether to retrieve from the project KB before the LLM call */
   use_kb_retrieval?: boolean;
+  /**
+   * When true (default), retrieved KB chunks are re-ranked into tiers
+   * (project → cross-project → general) before being shown to the LLM.
+   * Set false to keep pure cosine-similarity order — useful when a
+   * general doc is genuinely more relevant than a project-specific one.
+   */
+  kb_rerank_by_tier?: boolean;
   /** maximum expected answer length in chars (the prompt enforces brevity) */
   max_answer_chars?: number;
   when_facts?: Record<string, string>;
+  /**
+   * Honest tag for rules whose answer needs spatial / geometric reasoning
+   * the PDF text layer can't provide (e.g. centre-to-centre distances on
+   * a CAD-PDF). The LLM is told these are expected to land in "needs
+   * eyes" most of the time. Used for telemetry and to tweak the prompt.
+   */
+  requires_geometric_reasoning?: boolean;
 }
 
 export interface ProjectUnit {

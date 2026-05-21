@@ -54,6 +54,18 @@ export async function POST(
   // html and falls back to UTF-8 for unknown types.
   const bytes = Buffer.from(await file.arrayBuffer());
   const extracted = await extractFile(file.name, file.type, bytes);
+  // DWG / DXF and other native CAD formats: surface a clear 415 rather
+  // than letting the empty extraction fall into the "too little text"
+  // bucket. Drafters should export to PDF; the message says so.
+  if (extracted.format === 'dwg') {
+    return NextResponse.json(
+      {
+        error: extracted.warnings[0] ?? 'Native CAD format not supported — export to PDF first.',
+        format: extracted.format,
+      },
+      { status: 415 },
+    );
+  }
   const content = extracted.text;
   if (!content || content.length < 50) {
     return NextResponse.json(

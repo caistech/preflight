@@ -18,7 +18,7 @@
 
 import { google } from 'googleapis';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { extractPdf } from '@/lib/pdf/extract';
+import { extractFile } from '@/lib/ingest/extract-file';
 import { ingestKbDocument } from '@/lib/kb/ingest';
 import { anthropic, MODEL_HAIKU } from '@/lib/ai/anthropic';
 
@@ -75,67 +75,49 @@ interface StoredDriveTokens {
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 
-interface DriveExtractor {
+/**
+ * Drive download routing — only the Drive-specific half (media vs Google's
+ * export-as-mimeType for native Docs/Sheets/Slides). The post-download bytes
+ * are normalised via lib/ingest/extract-file.ts so adding a new format only
+ * requires one edit there, not two.
+ *
+ * For PDF, the dispatcher returns ('cad-pdf' | 'pdf-parse' | 'failed'). When
+ * extractFile returns too little text we OCR-fallback locally — that's the
+ * one Drive-specific behaviour we keep here because OCR is expensive and we
+ * don't want every ingest path to pay for it.
+ */
+interface DriveDownloadSpec {
   download: 'media' | 'export';
+  /** When download='export', the MIME we ask Google to convert the native doc to. */
   exportMime?: string;
-  handle: (buf: Buffer, filename: string) => Promise<string>;
+  /** When download='export', the synthetic filename extension we hand
+   *  extract-file.ts so it picks the right branch. */
+  syntheticExt?: string;
 }
 
-const EXTRACTORS: Record<string, DriveExtractor> = {
-  'application/pdf': {
-    download: 'media',
-    handle: async (buf) => {
-      const r = await extractPdf(buf);
-      if (r.text.length >= 50) return r.text;
-      // OCR fallback for image-only PDFs
-      return ocrPdfWithClaude(buf);
-    },
-  },
+const DRIVE_DOWNLOAD_SPECS: Record<string, DriveDownloadSpec> = {
+  'application/pdf': { download: 'media' },
   'application/vnd.google-apps.document': {
     download: 'export',
     exportMime: 'text/plain',
-    handle: async (buf) => buf.toString('utf-8'),
+    syntheticExt: 'txt',
   },
   'application/vnd.google-apps.spreadsheet': {
     download: 'export',
     exportMime: 'text/csv',
-    handle: async (buf) => buf.toString('utf-8'),
+    syntheticExt: 'csv',
   },
   'application/vnd.google-apps.presentation': {
     download: 'export',
     exportMime: 'text/plain',
-    handle: async (buf) => buf.toString('utf-8'),
+    syntheticExt: 'txt',
   },
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': {
-    download: 'media',
-    handle: async (buf) => {
-      const mammoth = await import('mammoth');
-      const result = await mammoth.extractRawText({ buffer: buf });
-      return result.value;
-    },
-  },
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': {
-    download: 'media',
-    handle: async (buf) => {
-      const XLSX = await import('xlsx');
-      const wb = XLSX.read(buf, { type: 'buffer' });
-      const sheets: string[] = [];
-      for (const name of wb.SheetNames) {
-        const sheet = wb.Sheets[name];
-        const csv = XLSX.utils.sheet_to_csv(sheet);
-        sheets.push(`=== Sheet: ${name} ===\n${csv}`);
-      }
-      return sheets.join('\n\n');
-    },
-  },
-  'text/plain': {
-    download: 'media',
-    handle: async (buf) => buf.toString('utf-8'),
-  },
-  'text/markdown': {
-    download: 'media',
-    handle: async (buf) => buf.toString('utf-8'),
-  },
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': { download: 'media' },
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': { download: 'media' },
+  'text/plain': { download: 'media' },
+  'text/markdown': { download: 'media' },
+  'text/csv': { download: 'media' },
+  'text/html': { download: 'media' },
 };
 
 const MAX_FILES_PER_RUN = 25;
@@ -202,20 +184,28 @@ export async function syncDriveForProject(
       result.files_skipped++;
       continue;
     }
-    const extractor = EXTRACTORS[f.mimeType];
-    if (!extractor) {
+    const spec = DRIVE_DOWNLOAD_SPECS[f.mimeType];
+    if (!spec) {
       result.files_skipped++;
       continue;
     }
 
     try {
       let buf: Buffer;
-      if (extractor.download === 'export') {
+      let extractFilename = f.name;
+      let extractMime = f.mimeType;
+      if (spec.download === 'export') {
         const exp = await drive.files.export(
-          { fileId: f.id, mimeType: extractor.exportMime! },
+          { fileId: f.id, mimeType: spec.exportMime! },
           { responseType: 'arraybuffer' }
         );
         buf = Buffer.from(exp.data as ArrayBuffer);
+        // Synthesize filename + mime so the dispatcher routes to the
+        // correct extractor branch (txt / csv).
+        if (spec.syntheticExt) {
+          extractFilename = `${f.name}.${spec.syntheticExt}`;
+          extractMime = spec.exportMime!;
+        }
       } else {
         const dl = await drive.files.get(
           { fileId: f.id, alt: 'media' },
@@ -228,9 +218,25 @@ export async function syncDriveForProject(
         continue;
       }
 
-      const content = (await extractor.handle(buf, f.name)).trim();
+      const extracted = await extractFile(extractFilename, extractMime, buf);
+      let content = extracted.text.trim();
+
+      // OCR fallback for image-only PDFs — kept Drive-specific because OCR
+      // is expensive and we don't want every ingest path to pay for it.
+      if (f.mimeType === 'application/pdf' && (!content || content.length < 50)) {
+        try {
+          content = (await ocrPdfWithClaude(buf)).trim();
+        } catch (e) {
+          result.errors.push({ file: f.displayName, reason: `pdfjs extracted too little (${content.length} chars); OCR fallback also failed: ${(e as Error).message}` });
+          continue;
+        }
+      }
+
       if (!content || content.length < 30) {
-        result.errors.push({ file: f.displayName, reason: `Extracted text too short (${content.length} chars) — may be image-only or empty` });
+        result.errors.push({
+          file: f.displayName,
+          reason: `Extracted text too short (${content.length} chars, format=${extracted.format}) — may be image-only or empty. Warnings: ${extracted.warnings.join('; ') || 'none'}`,
+        });
         continue;
       }
 

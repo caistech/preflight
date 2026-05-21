@@ -19,6 +19,7 @@ export type ExtractedFormat =
   | 'txt'
   | 'md'
   | 'html'
+  | 'dwg'
   | 'unknown';
 
 export interface FileExtractionResult {
@@ -42,6 +43,11 @@ const EXTENSION_MAP: Record<string, ExtractedFormat> = {
   markdown: 'md',
   html: 'html',
   htm: 'html',
+  // Recognised-but-unsupported native CAD formats. We return format='dwg' /
+  // 'unknown' with a clear warning so the upload route can 415 with a
+  // helpful message rather than trying to UTF-8 a binary file.
+  dwg: 'dwg',
+  dxf: 'dwg',
 };
 
 function detectFormat(filename: string, mimeType: string): ExtractedFormat {
@@ -134,6 +140,15 @@ export async function extractFile(
     case 'txt':
     case 'md':
       return { text: buffer.toString('utf-8'), format, warnings: [] };
+
+    case 'dwg':
+      return {
+        text: '',
+        format,
+        warnings: [
+          `${filename} is a native CAD format (DWG/DXF). Preflight does not extract native CAD; export to PDF from your drafting tool and upload that instead.`,
+        ],
+      };
 
     case 'unknown':
     default: {
