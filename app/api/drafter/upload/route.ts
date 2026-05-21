@@ -24,7 +24,33 @@ interface FileSummary {
   extraction_method: string;
 }
 
+type LogFn = (phase: string, extra?: Record<string, unknown>) => void;
+
 export async function POST(request: NextRequest) {
+  const t0 = Date.now();
+  const log: LogFn = (phase, extra) =>
+    console.log(
+      JSON.stringify({ src: 'drafter-upload', phase, ms: Date.now() - t0, ...(extra ?? {}) }),
+    );
+  log('received', { url: request.url });
+  try {
+    return await handleUpload(request, log);
+  } catch (e) {
+    const err = e as Error;
+    console.error(
+      JSON.stringify({
+        src: 'drafter-upload',
+        phase: 'fatal',
+        ms: Date.now() - t0,
+        message: err.message,
+        stack: err.stack,
+      }),
+    );
+    return NextResponse.json({ error: `Upload failed: ${err.message}` }, { status: 500 });
+  }
+}
+
+async function handleUpload(request: NextRequest, log: LogFn) {
   const db = createServiceClient();
 
   const form = await request.formData().catch(() => null);
@@ -41,6 +67,11 @@ export async function POST(request: NextRequest) {
   if (files.length === 0) {
     return NextResponse.json({ error: 'Missing file(s)' }, { status: 400 });
   }
+  log('form-parsed', {
+    fileCount: files.length,
+    totalBytes: files.reduce((s, f) => s + f.size, 0),
+    fileSummaries: files.map((f) => ({ name: f.name, bytes: f.size, type: f.type })),
+  });
 
   // Verify drafter token
   const hash = hashDrafterToken(token);
@@ -56,9 +87,13 @@ export async function POST(request: NextRequest) {
   }
 
   const projectId = tokenRow.project_id;
+  log('token-validated', { projectId, drafterTokenId: tokenRow.id });
 
   // Load project context: facts + active register rows
-  const [{ data: factRows }, { data: registerRows }] = await Promise.all([
+  const [
+    { data: factRows, error: factErr },
+    { data: registerRows, error: regErr },
+  ] = await Promise.all([
     db.from('project_facts').select('key, value').eq('project_id', projectId),
     db
       .from('register_rows')
@@ -70,6 +105,12 @@ export async function POST(request: NextRequest) {
   const facts: Record<string, string> = {};
   for (const f of factRows ?? []) facts[f.key] = f.value;
   const rows = (registerRows ?? []) as RegisterRow[];
+  log('context-loaded', {
+    factCount: Object.keys(facts).length,
+    rowCount: rows.length,
+    factErr: factErr?.message,
+    regErr: regErr?.message,
+  });
 
   // Extract each PDF; concatenate with === FILE === separators so rules can
   // grep for source-file context while still seeing all extracted text.
@@ -80,8 +121,19 @@ export async function POST(request: NextRequest) {
   let totalPages = 0;
 
   for (const file of files) {
+    const tFile = Date.now();
+    log('pdf-extract-start', { name: file.name, bytes: file.size });
     const bytes = Buffer.from(await file.arrayBuffer());
     const extracted = await extractPdf(bytes);
+    log('pdf-extract-done', {
+      name: file.name,
+      bytes: file.size,
+      pages: extracted.page_count,
+      method: extracted.extraction_method,
+      textLen: extracted.text.length,
+      warnings: extracted.warnings,
+      extractMs: Date.now() - tFile,
+    });
     fileSummaries.push({
       name: file.name,
       bytes: file.size,
@@ -120,8 +172,10 @@ export async function POST(request: NextRequest) {
     .select('id')
     .single();
   if (dsErr || !ds) {
+    log('persist-set-failed', { error: dsErr?.message });
     return NextResponse.json({ error: `Could not persist set: ${dsErr?.message}` }, { status: 500 });
   }
+  log('set-persisted', { drawingSetId: ds.id, totalBytes, totalPages, extractionMethod: extractionMethodForRow });
 
   const { data: run, error: runErr } = await db
     .from('check_runs')
@@ -135,8 +189,10 @@ export async function POST(request: NextRequest) {
     .select('id')
     .single();
   if (runErr || !run) {
+    log('run-start-failed', { error: runErr?.message });
     return NextResponse.json({ error: `Could not start run: ${runErr?.message}` }, { status: 500 });
   }
+  log('run-started', { checkRunId: run.id, rowCount: rows.length });
 
   const hard_fails: ResultLine[] = [];
   const needs_review: ResultLine[] = [];
@@ -146,6 +202,7 @@ export async function POST(request: NextRequest) {
 
   for (const row of rows) {
     let result: CheckEvaluationResult;
+    let deferredToLlm = false;
     try {
       result = evaluateRow({
         row,
@@ -158,18 +215,28 @@ export async function POST(request: NextRequest) {
         result.evidence &&
         (result.evidence as Record<string, unknown>).defer_to_llm
       ) {
+        deferredToLlm = true;
+        const tLlm = Date.now();
         result = await runManualCheck(
           row.check_spec as unknown as import('@/lib/rules/types').ManualCheckSpec,
           combinedText,
           facts,
           projectId
         );
+        log('manual-check-done', {
+          rowId: row.id,
+          requirement: row.requirement.slice(0, 60),
+          outcome: result.outcome,
+          llmMs: Date.now() - tLlm,
+        });
       }
     } catch (e) {
-      result = { outcome: 'error', message: `Eval error: ${(e as Error).message}` };
+      const err = e as Error;
+      log('row-eval-error', { rowId: row.id, message: err.message, deferredToLlm });
+      result = { outcome: 'error', message: `Eval error: ${err.message}` };
     }
 
-    await db.from('check_results').insert({
+    const { error: resultInsertErr } = await db.from('check_results').insert({
       check_run_id: run.id,
       register_row_id: row.id,
       outcome: result.outcome,
@@ -177,6 +244,7 @@ export async function POST(request: NextRequest) {
       evidence: result.evidence ?? null,
       llm_reasoning: result.llm_reasoning ?? null,
     });
+    if (resultInsertErr) log('check-result-insert-failed', { rowId: row.id, error: resultInsertErr.message });
 
     const line: ResultLine = {
       outcome: result.outcome,
@@ -192,6 +260,14 @@ export async function POST(request: NextRequest) {
     else if (result.outcome === 'not-applicable') not_applicable++;
     else if (result.outcome === 'error') errors++;
   }
+
+  log('rule-loop-done', {
+    hardFails: hard_fails.length,
+    needsReview: needs_review.length,
+    confirmedOk: confirmed_ok.length,
+    notApplicable: not_applicable,
+    errors,
+  });
 
   await db
     .from('check_runs')
@@ -209,6 +285,7 @@ export async function POST(request: NextRequest) {
     .update({ uses: (tokenRow.uses ?? 0) + 1, last_used_at: new Date().toISOString() })
     .eq('id', tokenRow.id);
 
+  log('completed', { checkRunId: run.id });
   return NextResponse.json({
     check_run_id: run.id,
     hard_fails,
