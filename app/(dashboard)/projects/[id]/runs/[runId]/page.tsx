@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation';
 import { createClient } from '@/lib/supabase/server';
 import { resolveProjectId } from '@/lib/project-resolver';
 import { OperatorReviewForm } from './operator-review-form';
+import { DecisionHistory, type DecisionVersion } from './decision-history';
 
 export const dynamic = 'force-dynamic';
 
@@ -30,6 +31,7 @@ interface ResultLine {
   requirement: string;
   source: string;
   decision: DecisionRow | null;
+  versions: DecisionVersion[];
 }
 
 export default async function OperatorRunPage({ params }: Props) {
@@ -70,8 +72,32 @@ export default async function OperatorRunPage({ params }: Props) {
     .select('id, check_result_id, decision, rationale, operator_review, operator_review_rationale, reviewed_at')
     .eq('check_run_id', runId);
   const decisionsByResult = new Map<string, DecisionRow>();
+  const decisionIds: string[] = [];
   for (const d of decisions ?? []) {
     decisionsByResult.set(d.check_result_id, d as DecisionRow);
+    decisionIds.push(d.id);
+  }
+
+  // Fetch version histories for all decisions in one round-trip.
+  const versionsByDecision = new Map<string, DecisionVersion[]>();
+  if (decisionIds.length > 0) {
+    const { data: versionRows } = await db
+      .from('check_result_decision_versions')
+      .select('decision_id, version_number, decision, rationale, operator_review, operator_review_rationale, change_kind, created_at')
+      .in('decision_id', decisionIds);
+    for (const v of versionRows ?? []) {
+      const list = versionsByDecision.get(v.decision_id) ?? [];
+      list.push({
+        version_number: v.version_number,
+        decision: v.decision,
+        rationale: v.rationale,
+        operator_review: v.operator_review,
+        operator_review_rationale: v.operator_review_rationale,
+        change_kind: v.change_kind as DecisionVersion['change_kind'],
+        created_at: v.created_at,
+      });
+      versionsByDecision.set(v.decision_id, list);
+    }
   }
 
   const hardFails: ResultLine[] = [];
@@ -79,6 +105,7 @@ export default async function OperatorRunPage({ params }: Props) {
   const confirmedOk: ResultLine[] = [];
   for (const r of results ?? []) {
     const reg = (((r as { register_rows?: { requirement?: string; source?: string; severity?: string } | { requirement?: string; source?: string; severity?: string }[] }).register_rows) ?? {}) as { requirement?: string; source?: string; severity?: string };
+    const decisionRow = decisionsByResult.get(r.id) ?? null;
     const line: ResultLine = {
       check_result_id: r.id,
       outcome: r.outcome,
@@ -86,7 +113,8 @@ export default async function OperatorRunPage({ params }: Props) {
       severity: reg.severity ?? 'review',
       requirement: reg.requirement ?? '',
       source: reg.source ?? '',
-      decision: decisionsByResult.get(r.id) ?? null,
+      decision: decisionRow,
+      versions: decisionRow ? versionsByDecision.get(decisionRow.id) ?? [] : [],
     };
     if (r.outcome === 'fail' && reg.severity === 'hard-fail') hardFails.push(line);
     else if (r.outcome === 'fail' || r.outcome === 'unsure') needsReview.push(line);
@@ -171,21 +199,24 @@ function Section({
             <div className="text-xs text-gray-500">Source: {l.source}</div>
 
             {l.decision ? (
-              <OperatorReviewForm
-                projectId={projectId}
-                decisionId={l.decision.id}
-                drafterDecision={l.decision.decision}
-                drafterRationale={l.decision.rationale}
-                existingReview={
-                  l.decision.operator_review
-                    ? {
-                        review: l.decision.operator_review,
-                        rationale: l.decision.operator_review_rationale ?? '',
-                        reviewed_at: l.decision.reviewed_at ?? '',
-                      }
-                    : null
-                }
-              />
+              <>
+                <OperatorReviewForm
+                  projectId={projectId}
+                  decisionId={l.decision.id}
+                  drafterDecision={l.decision.decision}
+                  drafterRationale={l.decision.rationale}
+                  existingReview={
+                    l.decision.operator_review
+                      ? {
+                          review: l.decision.operator_review,
+                          rationale: l.decision.operator_review_rationale ?? '',
+                          reviewed_at: l.decision.reviewed_at ?? '',
+                        }
+                      : null
+                  }
+                />
+                <DecisionHistory versions={l.versions} />
+              </>
             ) : (
               <div className="mt-3 text-xs text-gray-500 italic">
                 Drafter has not recorded a decision on this item yet.
