@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { PasswordForm } from './password-form';
+import { ProfileForm } from './profile-form';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,9 +24,15 @@ export default async function SettingsPage() {
         <div className="mb-2 text-xs uppercase tracking-wide text-gray-500">Signed in as</div>
         <div className="text-sm text-gray-100">{user?.email ?? 'unknown'}</div>
         <div className="mt-1 text-xs text-gray-500">
-          Profile fields (first/last name, phone, company, job title) are not yet wired
-          to a profiles table on this project — when they land, they appear here.
+          Email lives on auth.users — change it via the magic-link flow (Forgot password →
+          Update email). Profile fields below are stored in public.profiles.
         </div>
+      </section>
+
+      {/* Profile */}
+      <section className="mt-6 rounded-2xl border border-gray-800 bg-gray-900/40 p-6">
+        <div className="mb-3 text-sm font-semibold text-gray-200">Profile</div>
+        <ProfileForm />
       </section>
 
       {/* Password */}
@@ -64,15 +71,12 @@ export default async function SettingsPage() {
         </ul>
       </section>
 
-      {/* Honest audit footer per the global AUTHENTICATED-APP CHROME RULE */}
+      {/* Honest audit footer — what's still missing per the global rule */}
       <section className="mt-6 rounded-2xl border border-amber-500/30 bg-amber-500/5 p-4 text-xs text-amber-200/90">
-        <div className="mb-2 font-semibold text-amber-300">Settings gaps (honest)</div>
-        Per the portfolio AUTHENTICATED-APP CHROME RULE, this page should also carry: profile
-        fields (first/last name, phone, company, job title) wired to a public.profiles table;
-        notification / email preferences; an avatar uploader; delete-account flow; and
-        sign-out-everywhere (revoke all refresh tokens). All of those require either a
-        profiles migration or a Supabase admin call we haven&apos;t wired in this session.
-        Returning in a follow-up.
+        <div className="mb-2 font-semibold text-amber-300">Still pending per the global rule</div>
+        Profile + password + sign-out are live. Still missing: avatar uploader (needs Supabase
+        Storage bucket); delete-account flow with confirm-by-typing-email; sign-out-everywhere
+        (revoke all refresh tokens — Supabase admin call). Returning in a follow-up.
         <div className="mt-2">
           <Link href="/projects" className="text-amber-300 hover:underline">
             Back to projects →

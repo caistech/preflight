@@ -1,6 +1,6 @@
 import Link from 'next/link';
-import { createServiceClient } from '@/lib/supabase/service';
 import { createClient } from '@/lib/supabase/server';
+import { createServiceClient } from '@/lib/supabase/service';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,24 +17,27 @@ interface ProjectRow {
 export default async function ProjectsPage() {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
-  const db = createServiceClient();
 
-  // For v0: list all projects the operator has membership on.
-  // Membership-bootstrapping: any signed-in user sees every project (single-operator MVP).
-  // The proper member-scoped query lands in a follow-up turn alongside multi-operator support.
-  const [{ data }, { count: pendingReviewCount }] = await Promise.all([
-    db
-      .from('projects')
-      .select('id, slug, name, owner_label, drafter_label, council, description')
-      .order('created_at', { ascending: false }),
-    db
-      .from('check_result_decisions')
-      .select('id', { count: 'exact', head: true })
-      .is('operator_review', null),
-  ]);
+  // User-scoped read — RLS via current_user_project_ids() restricts the
+  // list to projects the signed-in user has a project_memberships row for.
+  // The membership backfill (migration 0021) granted every existing user
+  // 'owner' on every project as the single-operator MVP baseline.
+  const { data } = await supabase
+    .from('projects')
+    .select('id, slug, name, owner_label, drafter_label, council, description')
+    .order('created_at', { ascending: false });
+
+  // Pending-reviews count for the inline CTA. Service client because the
+  // count is a global queue signal and the per-row RLS would over-restrict.
+  const adminDb = createServiceClient();
+  const { count: pendingReviewCount } = await adminDb
+    .from('check_result_decisions')
+    .select('id', { count: 'exact', head: true })
+    .is('operator_review', null);
 
   const projects = (data ?? []) as ProjectRow[];
   const reviewCount = pendingReviewCount ?? 0;
+  void user;
 
   return (
     <div className="mx-auto max-w-5xl px-6 py-10">
