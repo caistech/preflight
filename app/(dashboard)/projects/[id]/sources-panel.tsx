@@ -232,10 +232,10 @@ function FileForm({ projectId }: { projectId: string }) {
         />
       </div>
       <div>
-        <label className="mb-1 block text-xs text-gray-400">PDF / .txt / .md (max 8 MB)</label>
+        <label className="mb-1 block text-xs text-gray-400">PDF · DOCX · XLSX · CSV · TXT · MD · HTML (max 8 MB)</label>
         <input
           type="file"
-          accept=".pdf,.txt,.md,application/pdf,text/plain,text/markdown"
+          accept=".pdf,.docx,.xlsx,.xls,.csv,.tsv,.txt,.md,.html,.htm,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv,text/tab-separated-values,text/plain,text/markdown,text/html"
           onChange={(e) => setFile(e.target.files?.[0] ?? null)}
           className="block w-full text-sm text-gray-300 file:mr-4 file:rounded-lg file:border file:border-gray-700 file:bg-gray-800 file:px-3 file:py-1.5 file:text-xs file:text-gray-200 hover:file:bg-gray-700"
         />

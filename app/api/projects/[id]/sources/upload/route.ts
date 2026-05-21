@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateAndGetDb } from '@/lib/supabase/auth';
-import { extractPdf } from '@/lib/pdf/extract';
+import { extractFile } from '@/lib/ingest/extract-file';
 import { ingestKbDocument } from '@/lib/kb/ingest';
 import { resolveProjectId } from '@/lib/project-resolver';
 
@@ -50,20 +50,20 @@ export async function POST(
     );
   }
 
-  // Extract text. PDFs via pdf-parse; .txt/.md treated as raw.
+  // Extract text. Dispatcher handles pdf / docx / xlsx / csv / txt / md /
+  // html and falls back to UTF-8 for unknown types.
   const bytes = Buffer.from(await file.arrayBuffer());
-  let content = '';
-  if (file.name.toLowerCase().endsWith('.pdf') || file.type === 'application/pdf') {
-    const extracted = await extractPdf(bytes);
-    content = extracted.text;
-    if (!content || content.length < 50) {
-      return NextResponse.json(
-        { error: `PDF extraction produced too little text (${content.length} chars). The CAD-PDF path is deferred; for now try a born-digital PDF or a .txt/.md version.` },
-        { status: 422 }
-      );
-    }
-  } else {
-    content = bytes.toString('utf-8');
+  const extracted = await extractFile(file.name, file.type, bytes);
+  const content = extracted.text;
+  if (!content || content.length < 50) {
+    return NextResponse.json(
+      {
+        error: `Extraction produced too little text (${content.length} chars from a ${extracted.format} file). For scanned/image PDFs the OCR path is not wired yet; for everything else this usually means the file is empty or binary.`,
+        format: extracted.format,
+        warnings: extracted.warnings,
+      },
+      { status: 422 },
+    );
   }
 
   try {
@@ -84,8 +84,9 @@ export async function POST(
         source_kind: sourceKind,
         filename: file.name,
         byte_size: file.size,
+        format: extracted.format,
         chunk_count: result.chunk_count,
-        warnings: result.warnings,
+        warnings: [...extracted.warnings, ...result.warnings],
       },
     });
 

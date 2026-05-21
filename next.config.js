@@ -9,10 +9,11 @@ const nextConfig = {
     ],
   },
   experimental: {
-    // pdfjs-dist + pdf-parse are heavy native-ish modules; let Next bundle
-    // them as externals so the serverless function doesn't choke on the
-    // worker code or eval-style polyfills they ship.
-    serverComponentsExternalPackages: ['pdfjs-dist', 'pdf-parse'],
+    // pdfjs-dist + pdf-parse + mammoth + xlsx are heavy native-ish modules;
+    // let Next leave them as externals so the serverless function doesn't
+    // choke on the worker code, eval-style polyfills, or large dictionaries
+    // they ship.
+    serverComponentsExternalPackages: ['pdfjs-dist', 'pdf-parse', 'mammoth', 'xlsx'],
     // Force the pdfjs worker file into the upload function's bundle. Next's
     // file-tracing won't pick it up automatically because it's resolved
     // dynamically at runtime via createRequire(). Without this Vercel's
