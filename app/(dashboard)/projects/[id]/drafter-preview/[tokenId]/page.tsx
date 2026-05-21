@@ -106,9 +106,24 @@ export default async function DrafterPreviewPage({
         <h1 className="mb-2 text-3xl font-bold">
           Pre-submission check{token.drafter_name ? ` — ${token.drafter_name}` : ''}
         </h1>
-        <p className="mb-6 max-w-2xl text-sm text-gray-400">
+        <p className="mb-3 max-w-2xl text-sm text-gray-400">
           (Drafter would see the upload widget here. Suppressed in preview.)
         </p>
+        <form
+          action={`/api/projects/${idOrSlug}/drafter-tokens/${token.id}/impersonate`}
+          method="post"
+          target="_blank"
+          rel="noreferrer"
+          className="mb-6"
+        >
+          <button
+            type="submit"
+            className="inline-flex items-center gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300 hover:border-emerald-500 hover:bg-emerald-500/20"
+          >
+            Enter as drafter ↗
+            <span className="text-emerald-300/60">(10-min token, audit-logged)</span>
+          </button>
+        </form>
 
         <section className="mb-6 rounded-2xl border border-gray-800 bg-gray-900/30 p-5">
           <div className="mb-3 text-xs uppercase tracking-wide text-gray-500">Project details</div>

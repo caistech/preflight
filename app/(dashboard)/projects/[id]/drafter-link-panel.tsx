@@ -218,6 +218,23 @@ function TokenRow({ token, projectId }: { token: DrafterToken; projectId: string
             Preview ↗
           </a>
           {isActive && (
+            <form
+              action={`/api/projects/${projectId}/drafter-tokens/${token.id}/impersonate`}
+              method="post"
+              target="_blank"
+              rel="noreferrer"
+              className="inline"
+            >
+              <button
+                type="submit"
+                className="rounded-md border border-gray-700 px-2 py-1 text-xs text-gray-400 hover:border-emerald-500 hover:text-emerald-400"
+                title="Mint a 10-minute drafter token and open the actual drafter page in a new tab"
+              >
+                Enter ↗
+              </button>
+            </form>
+          )}
+          {isActive && (
             <button
               type="button"
               onClick={onRevoke}
