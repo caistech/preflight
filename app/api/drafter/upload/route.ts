@@ -4,10 +4,13 @@ import { hashDrafterToken } from '@/lib/drafter-token';
 import { extractPdf } from '@/lib/pdf/extract';
 import { evaluateRow } from '@/lib/rules/engine';
 import { runManualCheck } from '@/lib/ai/manual-check';
-import type { RegisterRow, CheckEvaluationResult } from '@/lib/rules/types';
+import type { RegisterRow, CheckEvaluationResult, ManualCheckSpec } from '@/lib/rules/types';
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 60;
+// 300s ceiling so a Lot 442-sized register (many manual-check rules) has room
+// to land. Phase-2 of the loop below already parallelises the LLM calls, so
+// the worst case is the slowest single call, not the sum.
+export const maxDuration = 300;
 
 interface ResultLine {
   outcome: string;
@@ -25,6 +28,18 @@ interface FileSummary {
 }
 
 type LogFn = (phase: string, extra?: Record<string, unknown>) => void;
+
+// Wrap any thenable in a Promise.race so a Supabase / fetch hang becomes a
+// deterministic timeout error instead of dragging the function to its
+// platform maxDuration limit and dropping the TCP connection.
+function withTimeout<T>(p: PromiseLike<T>, ms: number, label: string): Promise<T> {
+  return Promise.race<T>([
+    Promise.resolve(p),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timeout after ${ms}ms`)), ms),
+    ),
+  ]);
+}
 
 export async function POST(request: NextRequest) {
   const t0 = Date.now();
@@ -73,13 +88,21 @@ async function handleUpload(request: NextRequest, log: LogFn) {
     fileSummaries: files.map((f) => ({ name: f.name, bytes: f.size, type: f.type })),
   });
 
-  // Verify drafter token
+  // Verify drafter token (timeout-wrapped — this is the first Supabase call
+  // and the one we've seen hang silently on the live function).
   const hash = hashDrafterToken(token);
-  const { data: tokenRow } = await db
-    .from('drafter_tokens')
-    .select('id, project_id, drafter_name, expires_at, revoked_at, uses')
-    .eq('token_hash', hash)
-    .single();
+  const tTok = Date.now();
+  log('token-query-start');
+  const { data: tokenRow, error: tokenErr } = await withTimeout(
+    db
+      .from('drafter_tokens')
+      .select('id, project_id, drafter_name, expires_at, revoked_at, uses')
+      .eq('token_hash', hash)
+      .single(),
+    10000,
+    'drafter_tokens',
+  );
+  log('token-query-done', { ms: Date.now() - tTok, found: !!tokenRow, err: tokenErr?.message });
   if (!tokenRow) return NextResponse.json({ error: 'Invalid link' }, { status: 401 });
   if (tokenRow.revoked_at) return NextResponse.json({ error: 'Link revoked' }, { status: 401 });
   if (new Date(tokenRow.expires_at) < new Date()) {
@@ -91,17 +114,8 @@ async function handleUpload(request: NextRequest, log: LogFn) {
 
   // Load project context: facts + active register rows.
   // Run sequentially (not Promise.all) so per-query timing pins down which
-  // one stalls if either does. Each query is wrapped with a 15s timeout
-  // race so a Supabase hang surfaces as a JSON 500 instead of dropping
-  // the TCP connection on Vercel's timeout.
-  const withTimeout = <T>(p: PromiseLike<T>, ms: number, label: string): Promise<T> =>
-    Promise.race<T>([
-      Promise.resolve(p),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error(`${label} timeout after ${ms}ms`)), ms),
-      ),
-    ]);
-
+  // one stalls if either does. withTimeout (module scope) makes a hang
+  // surface as a JSON 500 instead of dropping the TCP connection.
   const tFacts = Date.now();
   log('facts-query-start');
   const { data: factRows, error: factErr } = await withTimeout(
@@ -229,9 +243,20 @@ async function handleUpload(request: NextRequest, log: LogFn) {
   let not_applicable = 0;
   let errors = 0;
 
+  // Phase 1 — deterministic eval for every row, fire LLM calls in parallel
+  // (don't await yet). The deterministic step is microsecond-cheap; the LLM
+  // step is the only thing worth parallelising. Per-call timeout is 25s so a
+  // single stalled call can't drag the whole batch.
+  const tPhase1 = Date.now();
+  const rowResults: Array<{
+    row: RegisterRow;
+    result: CheckEvaluationResult;
+    llmPromise?: Promise<CheckEvaluationResult>;
+  }> = [];
+
   for (const row of rows) {
     let result: CheckEvaluationResult;
-    let deferredToLlm = false;
+    let llmPromise: Promise<CheckEvaluationResult> | undefined;
     try {
       result = evaluateRow({
         row,
@@ -244,27 +269,68 @@ async function handleUpload(request: NextRequest, log: LogFn) {
         result.evidence &&
         (result.evidence as Record<string, unknown>).defer_to_llm
       ) {
-        deferredToLlm = true;
         const tLlm = Date.now();
-        result = await runManualCheck(
-          row.check_spec as unknown as import('@/lib/rules/types').ManualCheckSpec,
-          combinedText,
-          facts,
-          projectId
-        );
-        log('manual-check-done', {
-          rowId: row.id,
-          requirement: row.requirement.slice(0, 60),
-          outcome: result.outcome,
-          llmMs: Date.now() - tLlm,
-        });
+        llmPromise = withTimeout(
+          runManualCheck(
+            row.check_spec as unknown as ManualCheckSpec,
+            combinedText,
+            facts,
+            projectId
+          ),
+          25000,
+          `manual-check[${row.id}]`,
+        )
+          .then((r) => {
+            log('manual-check-done', {
+              rowId: row.id,
+              requirement: row.requirement.slice(0, 60),
+              outcome: r.outcome,
+              llmMs: Date.now() - tLlm,
+            });
+            return r;
+          })
+          .catch((e) => {
+            const err = e as Error;
+            log('manual-check-failed', {
+              rowId: row.id,
+              error: err.message,
+              llmMs: Date.now() - tLlm,
+            });
+            return {
+              outcome: 'error' as const,
+              message: `Manual check failed: ${err.message}`,
+            };
+          });
       }
     } catch (e) {
       const err = e as Error;
-      log('row-eval-error', { rowId: row.id, message: err.message, deferredToLlm });
+      log('row-eval-error', { rowId: row.id, message: err.message });
       result = { outcome: 'error', message: `Eval error: ${err.message}` };
     }
+    rowResults.push({ row, result, llmPromise });
+  }
+  const llmRowCount = rowResults.filter((r) => r.llmPromise).length;
+  log('phase1-done', {
+    ms: Date.now() - tPhase1,
+    totalRows: rowResults.length,
+    llmRows: llmRowCount,
+  });
 
+  // Phase 2 — await every LLM call in parallel. Walltime = slowest single
+  // call (≤25s), not sum of all calls.
+  const tPhase2 = Date.now();
+  await Promise.all(
+    rowResults
+      .filter((r) => r.llmPromise)
+      .map(async (r) => {
+        r.result = await r.llmPromise!;
+      }),
+  );
+  log('phase2-done', { ms: Date.now() - tPhase2, llmRows: llmRowCount });
+
+  // Phase 3 — persist + categorise in original row order
+  const tPhase3 = Date.now();
+  for (const { row, result } of rowResults) {
     const { error: resultInsertErr } = await db.from('check_results').insert({
       check_run_id: run.id,
       register_row_id: row.id,
@@ -289,6 +355,7 @@ async function handleUpload(request: NextRequest, log: LogFn) {
     else if (result.outcome === 'not-applicable') not_applicable++;
     else if (result.outcome === 'error') errors++;
   }
+  log('phase3-done', { ms: Date.now() - tPhase3 });
 
   log('rule-loop-done', {
     hardFails: hard_fails.length,
