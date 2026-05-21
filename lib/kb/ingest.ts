@@ -11,6 +11,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { proposeFactsFromDocument } from '@/lib/ai/facts-proposer';
 
 const OPENAI_EMBED_MODEL = 'text-embedding-3-small';
 const OPENAI_EMBED_DIM = 1536;
@@ -29,11 +30,25 @@ export interface IngestResult {
   document_id: string;
   chunk_count: number;
   warnings: string[];
+  /** Populated when the facts proposer ran successfully (any path). */
+  fact_candidates?: {
+    proposed: number;
+    inserted: number;
+    rejected_invalid: number;
+    warnings: string[];
+  };
+}
+
+export interface IngestOptions {
+  /** Skip the LLM facts proposer pass. Default false. Use for re-ingest
+   *  scripts or bulk imports where you don't want N proposer calls. */
+  skipFactsProposer?: boolean;
 }
 
 export async function ingestKbDocument(
   db: SupabaseClient,
-  input: IngestInput
+  input: IngestInput,
+  options: IngestOptions = {},
 ): Promise<IngestResult> {
   const warnings: string[] = [];
 
@@ -95,10 +110,40 @@ export async function ingestKbDocument(
     warnings.push('No embeddings produced — chunks not persisted');
   }
 
+  // Fire the facts proposer pass once the document is durable. Failures are
+  // captured as warnings — the proposer NEVER blocks the ingest. Skip when
+  // the caller asks (bulk imports, scripts).
+  let factsResult: IngestResult['fact_candidates'] | undefined;
+  if (!options.skipFactsProposer && chunks.length > 0) {
+    const { data: existingFactRows } = await db
+      .from('project_facts')
+      .select('key, value')
+      .eq('project_id', input.projectId);
+    const existingFacts: Record<string, string> = {};
+    for (const f of existingFactRows ?? []) existingFacts[f.key] = f.value;
+    try {
+      factsResult = await proposeFactsFromDocument(db, {
+        documentId: doc.id,
+        projectId: input.projectId,
+        documentTitle: input.title,
+        documentContent: trimmed,
+        existingFacts,
+      });
+    } catch (e) {
+      factsResult = {
+        proposed: 0,
+        inserted: 0,
+        rejected_invalid: 0,
+        warnings: [`Proposer threw: ${(e as Error).message}`],
+      };
+    }
+  }
+
   return {
     document_id: doc.id,
     chunk_count: chunks.length,
     warnings,
+    fact_candidates: factsResult,
   };
 }
 

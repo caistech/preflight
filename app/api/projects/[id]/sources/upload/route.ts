@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import { authenticateAndGetDb } from '@/lib/supabase/auth';
 import { extractFile } from '@/lib/ingest/extract-file';
 import { ingestKbDocument } from '@/lib/kb/ingest';
-import { proposeFactsFromDocument } from '@/lib/ai/facts-proposer';
 import { resolveProjectId } from '@/lib/project-resolver';
 
 export const dynamic = 'force-dynamic';
@@ -88,40 +87,11 @@ export async function POST(
         format: extracted.format,
         chunk_count: result.chunk_count,
         warnings: [...extracted.warnings, ...result.warnings],
+        fact_candidates: result.fact_candidates,
       },
     });
 
-    // Fire the facts proposer pass. Inline (not awaited via background)
-    // because Vercel serverless terminates after the response; we accept the
-    // extra few seconds of latency in exchange for not losing proposals.
-    let factsResult: Awaited<ReturnType<typeof proposeFactsFromDocument>> | null = null;
-    if (result.chunk_count > 0) {
-      const { data: existingFactRows } = await db
-        .from('project_facts')
-        .select('key, value')
-        .eq('project_id', projectId);
-      const existingFacts: Record<string, string> = {};
-      for (const f of existingFactRows ?? []) existingFacts[f.key] = f.value;
-      try {
-        factsResult = await proposeFactsFromDocument(db, {
-          documentId: result.document_id,
-          projectId,
-          documentTitle: title ?? file.name,
-          documentContent: content,
-          existingFacts,
-        });
-      } catch (e) {
-        // Proposer failure must not fail the upload — log a warning and move on.
-        factsResult = {
-          proposed: 0,
-          inserted: 0,
-          rejected_invalid: 0,
-          warnings: [`Proposer threw: ${(e as Error).message}`],
-        };
-      }
-    }
-
-    return NextResponse.json({ ok: true, ...result, fact_candidates: factsResult });
+    return NextResponse.json({ ok: true, ...result });
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 500 });
   }
