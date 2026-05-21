@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { createServiceClient } from '@/lib/supabase/service';
 import { resolveProjectId } from '@/lib/project-resolver';
 import { DrafterLinkPanel } from './drafter-link-panel';
@@ -173,6 +174,7 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
                   <th className="px-4 py-3">Hard fails</th>
                   <th className="px-4 py-3">Needs review</th>
                   <th className="px-4 py-3">Confirmed OK</th>
+                  <th className="px-4 py-3"></th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-800">
@@ -185,6 +187,14 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
                     <td className="px-4 py-3 text-red-400">{r.hard_fails}</td>
                     <td className="px-4 py-3 text-amber-400">{r.needs_review}</td>
                     <td className="px-4 py-3 text-emerald-400">{r.confirmed_ok}</td>
+                    <td className="px-4 py-3 text-right">
+                      <Link
+                        href={`/projects/${idOrSlug}/runs/${r.id}`}
+                        className="rounded border border-gray-700 px-2 py-1 text-xs text-gray-300 hover:border-emerald-500 hover:text-emerald-400"
+                      >
+                        Review →
+                      </Link>
+                    </td>
                   </tr>
                 ))}
               </tbody>
