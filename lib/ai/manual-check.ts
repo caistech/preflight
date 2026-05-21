@@ -1,4 +1,6 @@
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { anthropic, MODEL_MANUAL_CHECK } from './anthropic';
+import { embedQuery } from '../kb/embed';
 import type { ManualCheckSpec, CheckEvaluationResult } from '../rules/types';
 
 /**
@@ -8,9 +10,17 @@ import type { ManualCheckSpec, CheckEvaluationResult } from '../rules/types';
  * excerpts. "unsure" is a first-class valid output. The LLM never
  * auto-passes; we extract pass/fail/unsure from a structured JSON tail.
  *
- * v0 keeps KB retrieval as a no-op (spec.use_kb_retrieval is honoured
- * structurally but the retrieval lands in a follow-up turn).
+ * When spec.use_kb_retrieval is true and a Supabase client is supplied,
+ * pulls top-K project KB chunks (own + cross-project matching applies_when
+ * + general) via match_kb_chunks and includes them in the LLM context with
+ * scope tags so the model can weight cross-project knowledge appropriately.
  */
+
+interface KbChunk {
+  content: string;
+  scope: string;
+  similarity: number;
+}
 
 const SYSTEM = `You are evaluating a single drawing-set rule for a building DA pre-submission triage tool.
 
@@ -28,7 +38,8 @@ export async function runManualCheck(
   spec: ManualCheckSpec,
   extractedText: string,
   facts: Record<string, string>,
-  _projectId: string
+  projectId: string,
+  db?: SupabaseClient,
 ): Promise<CheckEvaluationResult> {
   // Slice extracted text by hint terms to keep the LLM context tight
   const slices = (spec.context_hints && spec.context_hints.length)
@@ -39,11 +50,29 @@ export async function runManualCheck(
     .map(([k, v]) => `- ${k}: ${v}`)
     .join('\n');
 
+  // KB retrieval — only when the rule opts in AND a db client is wired in.
+  // Failures here are silent; the manual check proceeds without KB.
+  let kbBlock = '';
+  if (spec.use_kb_retrieval && db) {
+    const chunks = await retrieveKbChunks(db, projectId, spec);
+    if (chunks.length > 0) {
+      kbBlock =
+        '\n\nKB excerpts (retrieved by semantic similarity; lower-scoped chunks first):\n' +
+        chunks
+          .map(
+            (c, i) =>
+              `[${i + 1}] [scope=${c.scope}, sim=${c.similarity.toFixed(2)}]\n${c.content.slice(0, 700)}`,
+          )
+          .join('\n---\n');
+    }
+  }
+
   const userPrompt = `Project facts:
 ${factsBlock}
 
 Question to answer:
 ${spec.prompt}
+${kbBlock}
 
 Relevant extracted-text excerpts from the drawing set:
 """
@@ -159,4 +188,57 @@ function extractContextSlices(text: string, hints: string[], windowChars = 600):
 
 function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+async function retrieveKbChunks(
+  db: SupabaseClient,
+  projectId: string,
+  spec: ManualCheckSpec,
+): Promise<KbChunk[]> {
+  try {
+    // Build the retrieval query — the rule's prompt + any keyword hints.
+    // Hints are short tokens that anchor the embedding toward the right
+    // semantic neighbourhood (e.g. "subfloor vent rangehood 2m").
+    const queryText = [
+      spec.prompt,
+      spec.context_hints && spec.context_hints.length
+        ? `Keywords: ${spec.context_hints.join(', ')}`
+        : '',
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+
+    const embedding = await embedQuery(queryText);
+    if (!embedding) return [];
+
+    const { data, error } = await db.rpc('match_kb_chunks', {
+      query_embedding: embedding,
+      match_count: 5,
+      in_project_id: projectId,
+    });
+    if (error) return [];
+    if (!Array.isArray(data)) return [];
+
+    const chunks: KbChunk[] = data
+      .filter(
+        (r): r is { content: string; scope: string; similarity: number } =>
+          typeof r === 'object' && r !== null && typeof (r as { content?: unknown }).content === 'string',
+      )
+      .map((r) => ({
+        content: r.content,
+        scope: r.scope ?? 'project',
+        similarity: typeof r.similarity === 'number' ? r.similarity : 0,
+      }));
+
+    // Order: project-scoped first (most specific), then cross-project, then
+    // general. Within each tier, by similarity. The LLM reads top-to-bottom.
+    const tierRank = (s: string) => (s === 'project' ? 0 : s === 'cross-project' ? 1 : 2);
+    chunks.sort((a, b) => {
+      const t = tierRank(a.scope) - tierRank(b.scope);
+      return t !== 0 ? t : b.similarity - a.similarity;
+    });
+    return chunks;
+  } catch {
+    return [];
+  }
 }

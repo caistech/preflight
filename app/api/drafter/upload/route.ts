@@ -295,7 +295,8 @@ async function handleUpload(request: NextRequest, log: LogFn) {
             row.check_spec as unknown as ManualCheckSpec,
             combinedText,
             facts,
-            projectId
+            projectId,
+            db,
           ),
           25000,
           `manual-check[${row.id}]`,

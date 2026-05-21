@@ -173,13 +173,23 @@ Propose any new facts as instructed. JSON only.`;
 
   let inserted = 0;
   if (rows.length > 0) {
+    // Upsert with ignoreDuplicates so repeated proposer runs on the same
+    // doc (e.g. when a scope upgrade triggers cross-project fan-out twice)
+    // can't pile up duplicate pending candidates. The unique index covers
+    // (project, source_document, key, value, status). Same key with a
+    // different value is treated as a distinct proposal — the operator
+    // sees both and picks.
     const { error: insErr, count } = await db
       .from('fact_candidates')
-      .insert(rows, { count: 'exact' });
+      .upsert(rows, {
+        onConflict: 'project_id,source_document_id,proposed_key,proposed_value,status',
+        ignoreDuplicates: true,
+        count: 'exact',
+      });
     if (insErr) {
-      warnings.push(`Insert failed: ${insErr.message}`);
+      warnings.push(`Upsert failed: ${insErr.message}`);
     } else {
-      inserted = count ?? rows.length;
+      inserted = count ?? 0;
     }
   }
 
