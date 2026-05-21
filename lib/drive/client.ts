@@ -117,6 +117,13 @@ const DRIVE_DOWNLOAD_SPECS: Record<string, DriveDownloadSpec> = {
   'text/markdown': { download: 'media' },
   'text/csv': { download: 'media' },
   'text/html': { download: 'media' },
+  // Native CAD — downloaded as raw media; extractFile() routes through
+  // CloudConvert when enableDwgConvert + CLOUDCONVERT_API_KEY are present.
+  'application/acad': { download: 'media' },
+  'application/x-acad': { download: 'media' },
+  'application/autocad_dwg': { download: 'media' },
+  'image/x-dwg': { download: 'media' },
+  'application/dxf': { download: 'media' },
 };
 
 const MAX_FILES_PER_RUN = 25;
@@ -217,10 +224,13 @@ export async function syncDriveForProject(
         continue;
       }
 
-      // OCR fallback is now in extractFile() behind enableOcr — Drive
-      // opts in for image-only PDFs (and any other PDF the text layer
-      // can't handle). Same Claude Haiku helper everyone else uses.
-      const extracted = await extractFile(extractFilename, extractMime, buf, { enableOcr: true });
+      // OCR fallback + DWG conversion both gated via extractFile() opts.
+      // Drive folders often carry raw .dwg from drafters; CloudConvert
+      // converts to PDF then the dispatcher re-routes through extractPdf.
+      const extracted = await extractFile(extractFilename, extractMime, buf, {
+        enableOcr: true,
+        enableDwgConvert: true,
+      });
       const content = extracted.text.trim();
 
       if (!content || content.length < 30) {

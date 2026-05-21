@@ -11,6 +11,7 @@
 
 import { extractPdf } from '@/lib/pdf/extract';
 import { ocrPdfWithClaude } from '@/lib/ai/ocr-pdf';
+import { convertDwg, isDwgConvertConfigured } from './dwg-converter';
 
 export type ExtractedFormat =
   | 'pdf'
@@ -46,6 +47,14 @@ export interface ExtractFileOptions {
    * born-digital by definition.
    */
   enableOcr?: boolean;
+  /**
+   * When true and the file is DWG/DXF, send it to CloudConvert for PDF
+   * conversion then re-route through the PDF text-extract path. Off by
+   * default — CloudConvert costs ~$0.005-$0.02 per DWG. Requires
+   * CLOUDCONVERT_API_KEY in the deployment env. Conversion can take
+   * minutes; callers using this must set maxDuration accordingly.
+   */
+  enableDwgConvert?: boolean;
 }
 
 const EXTENSION_MAP: Record<string, ExtractedFormat> = {
@@ -182,14 +191,38 @@ export async function extractFile(
     case 'md':
       return { text: buffer.toString('utf-8'), format, warnings: [] };
 
-    case 'dwg':
+    case 'dwg': {
+      // When the caller opted into DWG conversion AND CLOUDCONVERT_API_KEY
+      // is configured, send the bytes to CloudConvert → PDF → re-extract
+      // via the PDF path. Otherwise return the legacy "export to PDF first"
+      // warning so the operator sees a clean failure rather than empty text.
+      if (options.enableDwgConvert && isDwgConvertConfigured()) {
+        const converted = await convertDwg(buffer, filename, 'pdf');
+        if ('error' in converted) {
+          return {
+            text: '',
+            format,
+            warnings: [`DWG conversion failed: ${converted.error}`],
+          };
+        }
+        const pdfResult = await extractPdf(converted.buffer);
+        return {
+          text: pdfResult.text,
+          format: 'pdf',
+          warnings: [
+            ...pdfResult.warnings,
+            `${filename} was converted DWG → PDF via CloudConvert before text extraction.`,
+          ],
+        };
+      }
       return {
         text: '',
         format,
         warnings: [
-          `${filename} is a native CAD format (DWG/DXF). Preflight does not extract native CAD; export to PDF from your drafting tool and upload that instead.`,
+          `${filename} is a native CAD format (DWG/DXF). ${isDwgConvertConfigured() ? 'Conversion not enabled for this ingest path.' : 'Set CLOUDCONVERT_API_KEY to enable native conversion, or export to PDF first.'}`,
         ],
       };
+    }
 
     case 'unknown':
     default: {

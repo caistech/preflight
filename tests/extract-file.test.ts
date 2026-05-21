@@ -2,18 +2,26 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // extract-file depends on pdfjs + pdf-parse via extractPdf. Mock those so
 // tests stay fast and don't pull in the worker code.
-const { mockExtractPdf, mockOcr } = vi.hoisted(() => ({
+const { mockExtractPdf, mockOcr, mockConvertDwg, mockIsConfigured } = vi.hoisted(() => ({
   mockExtractPdf: vi.fn(),
   mockOcr: vi.fn(),
+  mockConvertDwg: vi.fn(),
+  mockIsConfigured: vi.fn(),
 }));
 vi.mock('@/lib/pdf/extract', () => ({ extractPdf: mockExtractPdf }));
 vi.mock('@/lib/ai/ocr-pdf', () => ({ ocrPdfWithClaude: mockOcr }));
+vi.mock('@/lib/ingest/dwg-converter', () => ({
+  convertDwg: mockConvertDwg,
+  isDwgConvertConfigured: mockIsConfigured,
+}));
 
 import { extractFile } from '@/lib/ingest/extract-file';
 
 beforeEach(() => {
   mockExtractPdf.mockReset();
   mockOcr.mockReset();
+  mockConvertDwg.mockReset();
+  mockIsConfigured.mockReset();
 });
 
 describe('extractFile — format detection', () => {
@@ -75,6 +83,51 @@ describe('extractFile — HTML branch', () => {
     const r = await extractFile('page.html', 'text/html', Buffer.from(html));
     expect(r.format).toBe('html');
     expect(r.text).toBe('Hello World & friends');
+  });
+});
+
+describe('extractFile — DWG conversion', () => {
+  it('returns the legacy "export to PDF first" warning when enableDwgConvert is off', async () => {
+    mockIsConfigured.mockReturnValue(true);
+    const r = await extractFile('plan.dwg', '', Buffer.from('x'));
+    expect(r.format).toBe('dwg');
+    expect(mockConvertDwg).not.toHaveBeenCalled();
+    expect(r.warnings[0]).toContain('native CAD');
+  });
+
+  it('returns the not-configured warning when enableDwgConvert is on but key is missing', async () => {
+    mockIsConfigured.mockReturnValue(false);
+    const r = await extractFile('plan.dwg', '', Buffer.from('x'), { enableDwgConvert: true });
+    expect(r.format).toBe('dwg');
+    expect(mockConvertDwg).not.toHaveBeenCalled();
+    expect(r.warnings[0]).toContain('CLOUDCONVERT_API_KEY');
+  });
+
+  it('converts DWG → PDF and routes through extractPdf when configured + enabled', async () => {
+    mockIsConfigured.mockReturnValue(true);
+    mockConvertDwg.mockResolvedValueOnce({ buffer: Buffer.from('pdf-bytes'), format: 'pdf' });
+    mockExtractPdf.mockResolvedValueOnce({
+      text: 'extracted from converted PDF',
+      page_count: 1,
+      warnings: [],
+      extraction_method: 'pdf-parse',
+    });
+    const r = await extractFile('plan.dwg', 'application/acad', Buffer.from('dwg-bytes'), {
+      enableDwgConvert: true,
+    });
+    expect(mockConvertDwg).toHaveBeenCalled();
+    expect(r.format).toBe('pdf');
+    expect(r.text).toBe('extracted from converted PDF');
+    expect(r.warnings.some((w) => w.includes('CloudConvert'))).toBe(true);
+  });
+
+  it('surfaces conversion error as a warning instead of throwing', async () => {
+    mockIsConfigured.mockReturnValue(true);
+    mockConvertDwg.mockResolvedValueOnce({ error: 'CloudConvert job timed out' });
+    const r = await extractFile('plan.dwg', '', Buffer.from('x'), { enableDwgConvert: true });
+    expect(r.format).toBe('dwg');
+    expect(r.text).toBe('');
+    expect(r.warnings[0]).toContain('CloudConvert job timed out');
   });
 });
 

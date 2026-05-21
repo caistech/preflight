@@ -50,6 +50,12 @@ export function ConnectedServicesPanel() {
       purpose: 'Voice agent (per VOICE AI STANDARD RULE — deferred per session decision).',
     },
     {
+      name: 'CloudConvert',
+      envVar: 'CLOUDCONVERT_API_KEY',
+      configured: check('CLOUDCONVERT_API_KEY'),
+      purpose: 'Native DWG/DXF → PDF conversion on ingest (operator upload, Drive sync, inbound attachments). Without this, native CAD surfaces a 415 with "export to PDF first". ~$0.005-$0.02 per file.',
+    },
+    {
       name: 'Supabase',
       envVar: ['NEXT_PUBLIC_SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'],
       configured:

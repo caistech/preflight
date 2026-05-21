@@ -5,7 +5,8 @@ import { ingestKbDocument } from '@/lib/kb/ingest';
 import { resolveProjectId } from '@/lib/project-resolver';
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 60;
+// 300s ceiling so DWG → CloudConvert → PDF round-trips (up to ~4 min) fit.
+export const maxDuration = 300;
 
 const MAX_BYTES = 8 * 1024 * 1024; // 8 MB — Vercel function body limit is 4.5 MB so this is generous-ish
 const ALLOWED_SOURCE_KINDS = [
@@ -53,15 +54,20 @@ export async function POST(
   // Extract text. Dispatcher handles pdf / docx / xlsx / csv / txt / md /
   // html and falls back to UTF-8 for unknown types.
   const bytes = Buffer.from(await file.arrayBuffer());
-  const extracted = await extractFile(file.name, file.type, bytes, { enableOcr: true });
-  // DWG / DXF and other native CAD formats: surface a clear 415 rather
-  // than letting the empty extraction fall into the "too little text"
-  // bucket. Drafters should export to PDF; the message says so.
+  const extracted = await extractFile(file.name, file.type, bytes, {
+    enableOcr: true,
+    enableDwgConvert: true,
+  });
+  // DWG/DXF: when CloudConvert is configured the bytes are converted to
+  // PDF and the format collapses to 'pdf' upstream. If we still see 'dwg'
+  // here the conversion either isn't enabled or failed — surface 415 with
+  // the warning that explains how to fix it.
   if (extracted.format === 'dwg') {
     return NextResponse.json(
       {
-        error: extracted.warnings[0] ?? 'Native CAD format not supported — export to PDF first.',
+        error: extracted.warnings[0] ?? 'Native CAD format not supported.',
         format: extracted.format,
+        warnings: extracted.warnings,
       },
       { status: 415 },
     );

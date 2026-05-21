@@ -164,7 +164,10 @@ export async function persistInboundEmail(
         );
         continue;
       }
-      const extracted = await extractFile(att.filename, att.content_type ?? '', buf, { enableOcr: true });
+      const extracted = await extractFile(att.filename, att.content_type ?? '', buf, {
+        enableOcr: true,
+        enableDwgConvert: true,
+      });
       if (extracted.format === 'dwg') {
         attachmentWarnings.push(`${att.filename}: native CAD format; export to PDF first.`);
         continue;
