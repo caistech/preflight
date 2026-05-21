@@ -184,34 +184,44 @@ Propose a SINGLE register row that captures the operator's intent, suitable for 
     return { inserted: false, warnings };
   }
 
+  // Two dedup constraints live on register_row_candidates:
+  //   1. (project_id, source_decision_id, status='pending') — same source
+  //      decision can't double-propose.
+  //   2. (project_id, requirement_fingerprint, status='pending') — two
+  //      DIFFERENT decisions proposing the same normalized requirement
+  //      text on the same sibling collapse to one pending row.
+  // Both are partial unique indexes that PostgREST onConflict can't target
+  // cleanly, so we INSERT and treat unique-violations as expected (the
+  // operator already has the equivalent pending row).
   const { error: insErr } = await db
     .from('register_row_candidates')
-    .upsert(
-      {
-        project_id: input.projectId,
-        source_document_id: input.documentId,
-        source_decision_id: input.sourceDecisionId,
-        source_project_id: input.sourceProjectId,
-        proposed_requirement: proposed.requirement.trim(),
-        proposed_source: proposed.source.trim(),
-        proposed_source_url: null,
-        proposed_check_type: proposed.check_type,
-        proposed_check_spec: proposed.check_spec,
-        proposed_severity: proposed.severity,
-        confidence:
-          typeof proposed.confidence === 'number' && proposed.confidence >= 0 && proposed.confidence <= 1
-            ? proposed.confidence
-            : null,
-        reasoning: typeof proposed.reasoning === 'string' ? proposed.reasoning.slice(0, 500) : null,
-      },
-      {
-        // Dedup index covers (project, source_decision, status) where
-        // source_decision is non-null; this lines up with that partial.
-        ignoreDuplicates: true,
-      },
-    );
+    .insert({
+      project_id: input.projectId,
+      source_document_id: input.documentId,
+      source_decision_id: input.sourceDecisionId,
+      source_project_id: input.sourceProjectId,
+      proposed_requirement: proposed.requirement.trim(),
+      proposed_source: proposed.source.trim(),
+      proposed_source_url: null,
+      proposed_check_type: proposed.check_type,
+      proposed_check_spec: proposed.check_spec,
+      proposed_severity: proposed.severity,
+      confidence:
+        typeof proposed.confidence === 'number' && proposed.confidence >= 0 && proposed.confidence <= 1
+          ? proposed.confidence
+          : null,
+      reasoning: typeof proposed.reasoning === 'string' ? proposed.reasoning.slice(0, 500) : null,
+    });
 
   if (insErr) {
+    // 23505 = unique_violation. Either source-decision dup or fingerprint
+    // dup — both mean an equivalent pending candidate already exists, which
+    // is the dedup behaviour we want. Surface as a soft warning rather than
+    // an error.
+    if ((insErr as { code?: string }).code === '23505') {
+      warnings.push(`Equivalent rule candidate already pending — skipped`);
+      return { inserted: false, proposal: proposed, warnings };
+    }
     warnings.push(`Could not insert rule candidate: ${insErr.message}`);
     return { inserted: false, proposal: proposed, warnings };
   }
