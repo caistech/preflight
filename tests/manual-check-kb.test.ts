@@ -142,4 +142,27 @@ describe('runManualCheck — KB retrieval branch', () => {
     expect(calls[0].content).toContain('spatial / geometric reasoning');
     expect(calls[0].content).toContain('Default to "unsure"');
   });
+
+  it('injects pre-scope evidence into the prompt and substitutes scoped_text for extracted text', async () => {
+    const calls: Array<{ content: string }> = [];
+    mockCreate.mockImplementationOnce(async (args: { messages: Array<{ content: string }> }) => {
+      calls.push(args.messages[0]);
+      return { content: [{ type: 'text', text: '{"outcome":"fail","message":"A109 title block is unit-specific"}' }] };
+    });
+    const spec = { ...baseSpec, use_kb_retrieval: false };
+    await runManualCheck(spec, 'FULL EXTRACTED TEXT — should be excluded when pre-scope is set', {}, 'p-1', undefined, {
+      pre_scope: 'site_wide_sheets',
+      candidates: [
+        { sheet_id: 'A109', file: 'fencing.pdf', page_idx: 1, distinct_units: 8, header_match: 'FENCING PLAN' },
+      ],
+      scoped_text: '[SHEET A109 file=fencing.pdf page=1]\nFENCING PLAN UNIT 1 UNIT 2 UNIT 3',
+    });
+    const userPrompt = calls[0]?.content ?? '';
+    expect(userPrompt).toContain('Deterministic pre-scoping (site_wide_sheets)');
+    expect(userPrompt).toContain('A109');
+    expect(userPrompt).toContain('FENCING PLAN');
+    // scoped_text should replace the full extracted text — the sentinel
+    // "FULL EXTRACTED TEXT" string must not appear anywhere in the prompt.
+    expect(userPrompt).not.toContain('FULL EXTRACTED TEXT');
+  });
 });

@@ -3,7 +3,7 @@ import { createServiceClient } from '@/lib/supabase/service';
 import { hashDrafterToken } from '@/lib/drafter-token';
 import { extractPdf } from '@/lib/pdf/extract';
 import { evaluateRow } from '@/lib/rules/engine';
-import { runManualCheck } from '@/lib/ai/manual-check';
+import { runManualCheck, type PreScopeEvidence } from '@/lib/ai/manual-check';
 import type { RegisterRow, CheckEvaluationResult, ManualCheckSpec, ProjectUnit } from '@/lib/rules/types';
 
 export const dynamic = 'force-dynamic';
@@ -290,6 +290,18 @@ async function handleUpload(request: NextRequest, log: LogFn) {
         (result.evidence as Record<string, unknown>).defer_to_llm
       ) {
         const tLlm = Date.now();
+        // Pre-scope: when the engine narrowed context to specific sheets,
+        // forward its evidence so the LLM layer can substitute scoped_text
+        // for combinedText AND cite the candidate sheet in its answer.
+        const ev = result.evidence as Record<string, unknown>;
+        let preScope: PreScopeEvidence | undefined;
+        if (typeof ev.pre_scope === 'string' && Array.isArray(ev.pre_scope_candidates)) {
+          preScope = {
+            pre_scope: ev.pre_scope,
+            candidates: ev.pre_scope_candidates as PreScopeEvidence['candidates'],
+            scoped_text: typeof ev.pre_scoped_text === 'string' ? ev.pre_scoped_text : null,
+          };
+        }
         llmPromise = withTimeout(
           runManualCheck(
             row.check_spec as unknown as ManualCheckSpec,
@@ -297,6 +309,7 @@ async function handleUpload(request: NextRequest, log: LogFn) {
             facts,
             projectId,
             db,
+            preScope,
           ),
           25000,
           `manual-check[${row.id}]`,

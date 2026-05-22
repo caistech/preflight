@@ -28,52 +28,17 @@ async function loadEnv() {
   return out;
 }
 
-// Seed register definition — kept inline here so a fresh checkout can seed
-// without compiling TypeScript. Mirrors lib/rules/seed-rules.ts; if the
-// canonical seed list grows, regenerate this constant.
-const SEED_RULES = [
-  {
-    requirement:
-      'Subfloor vents must NOT appear in the legend when the project uses a slab-on-biscuit footing system.',
-    source:
-      'Project definition — footing system is slab-on-biscuit, no subfloor void',
-    check_type: 'text-rule',
-    check_spec: {
-      kind: 'text-rule',
-      fail_if_found: true,
-      regex: '\\bSUB-?\\s*FLOOR\\s+VENT(?:S|ING)?\\b',
-      when_facts: { footing_system: 'slab-on-biscuit' },
-    },
-    severity: 'hard-fail',
-  },
-  {
-    requirement:
-      'The unit-numbering set on the site plan must be exactly {1..N} with no repeats, where N is the project unit_count.',
-    source: 'Council audit pattern — repeated unit numbers flagged in prior submissions',
-    check_type: 'logic-rule',
-    check_spec: {
-      kind: 'logic-rule',
-      logic: 'unit_numbering_set',
-      params: { expected_count: 0 }, // filled in below from facts.unit_count
-      when_facts: { has_multi_unit_site_plan: 'true' },
-    },
-    severity: 'hard-fail',
-  },
-  {
-    requirement:
-      'On a site-wide sheet (showing multiple units), the title block must reflect the full scope — not a single unit. A title block reading "UNIT 1 - 2x1 DWELLING (UNIT 1)" on a sheet that depicts the whole subdivision is a hard-fail; the title block must describe the site-wide scope instead.',
-    source: 'F2K drafting standard',
-    check_type: 'manual-check',
-    check_spec: {
-      kind: 'manual-check',
-      prompt:
-        "Look at the title block on this sheet (usually bottom-right corner — contains project name, sheet number, scale, etc.). Read what scope the title block describes — does it name a single unit (e.g. 'UNIT 1', '2x1 DWELLING (UNIT 1)') or the full site? Then check what the sheet itself depicts — does it show multiple units / a site-wide plan / multiple buildings? Answer pass / fail / unsure. FAIL = single-unit title block on a sheet showing multiple units (or vice versa). PASS = title block scope matches what's on the sheet. UNSURE = cannot determine from extracted text. Do NOT recommend a new title; flag for human review only.",
-      context_hints: ['title block', 'UNIT', 'DWELLING', 'SHEET', 'PROJECT NO', 'SCALE'],
-      use_kb_retrieval: false,
-      max_answer_chars: 400,
-    },
-    severity: 'hard-fail',
-  },
+// Pack definitions — mirror lib/rules/packs/*.ts. Inline here so a fresh
+// checkout can seed without compiling TypeScript. If the canonical packs
+// in lib/rules/packs/ change, regenerate the matching constants below.
+//
+// Pack selection logic mirrors selectSeedRules() in lib/rules/seed-rules.ts:
+//   universal  — always
+//   multi-unit — when unit_count > 1 or has_multi_unit_site_plan === 'true'
+//   modularwa  — when builder === 'ModularWA'  (currently empty; see
+//                supabase/migrations/0009_modularwa_register_update.sql)
+
+const UNIVERSAL_PACK = [
   {
     requirement:
       'All level values on the drawing set must use the SAME datum reference. Mixing AHD-converted FFL/FCL values with assumed-datum contour levels is a hard-fail — produces misleading readings (e.g. a ~38m stilt where there is actually a ~600mm pad).',
@@ -112,8 +77,8 @@ const SEED_RULES = [
     check_spec: {
       kind: 'manual-check',
       prompt:
-        'Find the revision-history block on this drawing (usually in or above the title block). Read the description for the latest revision. Does that description accurately reflect what is shown on the drawing? Examples of misalignment to flag: revision says "all levels revised to AHD" but contour levels are still in assumed datum; revision says "DATUM note added" but no DATUM note is visible; revision says "Unit numbering corrected" but the letterbox still shows duplicates. Answer pass / fail / unsure with a one-sentence reason. Do NOT rewrite the revision line for the drafter.',
-      context_hints: ['REVISION', 'REV ', 'revision history', 'DATUM', 'AHD'],
+        'Find the revision-history block on this drawing (usually in or above the title block). Read the description for the latest revision. Does that description accurately reflect what is shown on the drawing? Examples of misalignment to flag: revision says "all levels revised to AHD" but contour levels are still in assumed datum; revision says "DATUM note added" but no DATUM note is visible; revision says "Unit numbering corrected" but the letterbox still shows duplicates. When the revision lists elements (e.g. "added carport and verandah to elevations") and the extracted text contains both those element labels and elevation-sheet markers (E1/E2/E3/E4 or "ELEVATION"), treat the claim as confirmed (pass). Answer pass / fail / unsure with a one-sentence reason. Do NOT rewrite the revision line for the drafter.',
+      context_hints: ['REVISION', 'REV ', 'revision history', 'DATUM', 'AHD', 'ELEVATION', 'E1', 'E2', 'E3', 'E4'],
       use_kb_retrieval: true,
       max_answer_chars: 500,
     },
@@ -132,6 +97,7 @@ const SEED_RULES = [
       context_hints: ['boundary', 'bearing', 'street'],
       use_kb_retrieval: false,
       max_answer_chars: 400,
+      requires_geometric_reasoning: true,
     },
     severity: 'review',
   },
@@ -146,10 +112,55 @@ const SEED_RULES = [
       context_hints: ['crossover', 'driveway', 'road reserve'],
       use_kb_retrieval: true,
       max_answer_chars: 400,
+      requires_geometric_reasoning: true,
     },
     severity: 'review',
   },
 ];
+
+const MULTI_UNIT_PACK = [
+  {
+    requirement:
+      'The letterbox bank on the fencing/site sheet must contain one cell per unit, with no duplicates and none missing — exactly the {1..N} set (or the project_units active set when present). A bank that shows UNIT 4 twice and no UNIT 8 is a hard-fail.',
+    source: 'Council audit pattern — duplicate/missing letterbox cells flagged in prior submissions (e.g. Lot 442 A110: UNIT 4 duplicated, UNIT 8 missing)',
+    check_type: 'logic-rule',
+    check_spec: {
+      kind: 'logic-rule',
+      logic: 'unit_numbering_set',
+      params: { expected_count: 0 }, // filled in below from facts.unit_count
+      when_facts: { has_multi_unit_site_plan: 'true' },
+    },
+    severity: 'hard-fail',
+  },
+  {
+    requirement:
+      'On a site-wide sheet (showing multiple units), the title block must reflect the full scope — not a single unit. A title block reading "UNIT 1 - 2x1 DWELLING (UNIT 1)" on a sheet that depicts the whole subdivision is a hard-fail; the title block must describe the site-wide scope instead.',
+    source: 'F2K drafting standard',
+    check_type: 'manual-check',
+    check_spec: {
+      kind: 'manual-check',
+      prompt:
+        "For each candidate sheet listed in the pre-scoping block above, read its title block (the CLIENT / ADDRESS / HOUSE TYPE labels — usually near the bottom of the page). Decide whether the title-block scope (e.g. 'UNIT 1 - 2x1 DWELLING (UNIT 1)') matches the scope of what the sheet depicts (a single unit vs the whole site). FAIL when at least one site-wide candidate sheet carries a single-unit title block — name each failing sheet by its sheet_id (e.g. A109). PASS only when every candidate sheet's title-block scope matches what's on the sheet. UNSURE if the title-block text isn't recoverable from the excerpts. Do NOT propose a corrected title — that's for the drafter.",
+      context_hints: ['title block', 'CLIENT', 'ADDRESS', 'HOUSE TYPE', 'UNIT', 'DWELLING', 'SHEET', 'PROJECT NO', 'SCALE', 'FENCING PLAN', 'SITE PLAN'],
+      use_kb_retrieval: false,
+      max_answer_chars: 400,
+      pre_scope: 'site_wide_sheets',
+    },
+    severity: 'hard-fail',
+  },
+];
+
+const MODULARWA_PACK = [];
+
+function selectSeedRules(factsMap) {
+  const out = [...UNIVERSAL_PACK];
+  const isMultiUnit =
+    factsMap.has_multi_unit_site_plan === 'true' ||
+    Number(factsMap.unit_count ?? 0) > 1;
+  if (isMultiUnit) out.push(...MULTI_UNIT_PACK);
+  if (factsMap.builder === 'ModularWA') out.push(...MODULARWA_PACK);
+  return out;
+}
 
 const PROJECTS = [
   {
@@ -243,20 +254,23 @@ async function main() {
     // 3. Replace register
     const factsMap = Object.fromEntries(p.facts.map((f) => [f.key, f.value]));
     const unitCount = Number(factsMap.unit_count ?? 0);
+    const rules = selectSeedRules(factsMap);
 
     // Wipe existing seed rows for this project so re-running this seed
-    // doesn't accumulate duplicates. Project-specific rows added manually
-    // are NOT wiped (they have a different source pattern).
+    // doesn't accumulate duplicates. Match on the union of source strings
+    // across every pack — covers projects that previously got rules from
+    // a wider pack than they qualify for now. Project-specific rows added
+    // manually are NOT wiped (they have a different source pattern).
+    const allPackSources = Array.from(
+      new Set([...UNIVERSAL_PACK, ...MULTI_UNIT_PACK, ...MODULARWA_PACK].map((r) => r.source))
+    );
     await db
       .from('register_rows')
       .delete()
       .eq('project_id', proj.id)
-      .in(
-        'source',
-        SEED_RULES.map((r) => r.source)
-      );
+      .in('source', allPackSources);
 
-    for (const r of SEED_RULES) {
+    for (const r of rules) {
       let spec = r.check_spec;
       if (spec.kind === 'logic-rule' && spec.logic === 'unit_numbering_set') {
         spec = { ...spec, params: { ...spec.params, expected_count: unitCount } };
@@ -272,7 +286,7 @@ async function main() {
       });
       if (error) console.warn(`  ⚠ register row "${r.requirement.slice(0, 40)}...": ${error.message}`);
     }
-    console.log(`  ✓ register seeded (${SEED_RULES.length} rows)`);
+    console.log(`  ✓ register seeded (${rules.length} rows from packs: universal${factsMap.has_multi_unit_site_plan === 'true' || Number(factsMap.unit_count ?? 0) > 1 ? ' + multi-unit' : ''}${factsMap.builder === 'ModularWA' ? ' + modularwa' : ''})`);
   }
 
   console.log('\n✅ Seed complete.');

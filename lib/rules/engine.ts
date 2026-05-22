@@ -38,13 +38,26 @@ export function evaluateRow(input: CheckEvaluationInput): CheckEvaluationResult 
       return evalLogicRule(spec, input);
     case 'cross-ref':
       return evalCrossRef(spec, input);
-    case 'manual-check':
-      // Hand off — caller invokes LLM layer
+    case 'manual-check': {
+      // Hand off — caller invokes LLM layer. When the rule declares a
+      // pre_scope, run the deterministic scoper here so its evidence rides
+      // with the deferred result; the caller passes the scoped slice to
+      // the LLM layer in place of the full extracted text.
+      const evidence: Record<string, unknown> = { defer_to_llm: true, prompt: spec.prompt };
+      if (spec.pre_scope === 'site_wide_sheets') {
+        const swe = detectSiteWideSheets(input.extractedText);
+        evidence.pre_scope = 'site_wide_sheets';
+        evidence.pre_scope_candidates = swe.candidate_sheets;
+        if (swe.scoped_text.length > 0) {
+          evidence.pre_scoped_text = swe.scoped_text;
+        }
+      }
       return {
         outcome: 'unsure',
         message: `Manual check pending LLM evaluation: ${spec.prompt.slice(0, 80)}…`,
-        evidence: { defer_to_llm: true, prompt: spec.prompt },
+        evidence,
       };
+    }
     default: {
       // exhaustiveness
       const _exhaustive: never = spec;
@@ -118,11 +131,11 @@ function evalLogicRule(spec: LogicRuleSpec, input: CheckEvaluationInput): CheckE
       // a "letterbox" mention in a site-plan legend). Without this, the rule
       // sees site-plan unit labels + every title-block "UNIT 1" reference
       // and produces meaningless duplicate counts.
-      const pages = splitByPage(input.extractedText);
-      const letterboxPages = pages.filter((p) =>
-        /\b(letterbox|letter\s*box|\blb)\s*(elev|elevation)/i.test(p)
+      const sheetSlices = sliceBySheet(input.extractedText);
+      const letterboxSlices = sheetSlices.filter((s) =>
+        /\b(letterbox|letter\s*box|\blb)\s*(elev|elevation)/i.test(s.text)
       );
-      if (letterboxPages.length === 0) {
+      if (letterboxSlices.length === 0) {
         return {
           outcome: 'not-applicable',
           message: 'No letterbox elevation found in this set — unit-numbering check only runs on a sheet that lists the cells.',
@@ -136,9 +149,11 @@ function evalLogicRule(spec: LogicRuleSpec, input: CheckEvaluationInput): CheckE
       const unitToken = /\bunit\s+(\d{1,3})\b/gi;
       const counts: Record<number, number> = {};
       const cellRowLines: string[] = [];
+      const letterboxSheetIds: string[] = [];
 
-      for (const page of letterboxPages) {
-        const lines = page.split('\n');
+      for (const slice of letterboxSlices) {
+        if (slice.sheet_id) letterboxSheetIds.push(slice.sheet_id);
+        const lines = slice.text.split('\n');
         for (const line of lines) {
           const matches = [...line.matchAll(unitToken)];
           if (matches.length < 2) continue;
@@ -149,6 +164,9 @@ function evalLogicRule(spec: LogicRuleSpec, input: CheckEvaluationInput): CheckE
           }
         }
       }
+      const sheetLabel = letterboxSheetIds.length > 0
+        ? ` (${[...new Set(letterboxSheetIds)].join(', ')})`
+        : '';
 
       // If we never found a cell-row line, the letterbox is present but not
       // text-extractable — punt rather than false-pass.
@@ -173,18 +191,23 @@ function evalLogicRule(spec: LogicRuleSpec, input: CheckEvaluationInput): CheckE
       if (missing.length === 0 && extra.length === 0 && duplicates.length === 0) {
         return {
           outcome: 'pass',
-          message: `All ${expected} units present on letterbox, none extra, none duplicated`,
-          evidence: { found: [...found], counts, cell_rows: cellRowLines },
+          message: `Letterbox bank${sheetLabel}: all ${expected} unit cells present, none extra, none duplicated`,
+          evidence: { found: [...found], counts, cell_rows: cellRowLines, sheet_ids: letterboxSheetIds },
         };
       }
+      const formatUnitList = (ns: number[]) =>
+        ns.length === 1 ? `unit ${ns[0]}` : `units ${ns.join(', ')}`;
       const bits: string[] = [];
-      if (missing.length) bits.push(`missing units: ${missing.join(', ')}`);
-      if (duplicates.length) bits.push(`duplicated units: ${duplicates.join(', ')}`);
-      if (extra.length) bits.push(`unexpected units: ${extra.join(', ')}`);
+      if (missing.length) bits.push(`${formatUnitList(missing)} missing`);
+      if (duplicates.length) {
+        const dupDetail = duplicates.map((n) => `unit ${n} (×${counts[n]})`).join(', ');
+        bits.push(`duplicated: ${dupDetail}`);
+      }
+      if (extra.length) bits.push(`unexpected ${formatUnitList(extra)}`);
       return {
         outcome: 'fail',
-        message: bits.join('; '),
-        evidence: { found: [...found], missing, extra, duplicates, counts, cell_rows: cellRowLines },
+        message: `Letterbox bank${sheetLabel}: ${bits.join('; ')}`,
+        evidence: { found: [...found], missing, extra, duplicates, counts, cell_rows: cellRowLines, sheet_ids: letterboxSheetIds },
       };
     }
     case 'orphan_section_callouts': {
@@ -234,17 +257,40 @@ function evalLogicRule(spec: LogicRuleSpec, input: CheckEvaluationInput): CheckE
 
       const orphans = callouts_with_target.filter((c) => !presentSheets.has(c.target));
       if (orphans.length === 0) {
+        const calloutPhrase = callouts_with_target.length === 1
+          ? '1 section callout resolves'
+          : `All ${callouts_with_target.length} section callouts resolve`;
         return {
           outcome: 'pass',
-          message: `All ${callouts_with_target.length} section callout(s) resolve to sheets present in the upload`,
+          message: `${calloutPhrase} to sheets present in the upload`,
           evidence: { callouts: callouts_with_target, present_sheets: [...presentSheets] },
         };
       }
 
+      // Group orphans by their target sheet — N callouts pointing at the same
+      // missing sheet is one finding (one missing sheet), not N findings.
+      const orphansByTarget = new Map<string, string[]>();
+      for (const o of orphans) {
+        const arr = orphansByTarget.get(o.target) ?? [];
+        arr.push(o.label);
+        orphansByTarget.set(o.target, arr);
+      }
+      const findings: string[] = [];
+      for (const [target, labels] of orphansByTarget) {
+        const sheet = `A${target}`;
+        if (labels.length === 1) {
+          findings.push(`callout ${labels[0]} references ${sheet}`);
+        } else {
+          findings.push(`${labels.length} callouts reference ${sheet} (${labels.join(', ')})`);
+        }
+      }
+      const lead = orphansByTarget.size === 1
+        ? 'Missing referenced sheet'
+        : `Missing referenced sheets (${orphansByTarget.size})`;
       return {
         outcome: 'fail',
-        message: `Orphan section callout(s): ${orphans.map((o) => `${o.label} (target A${o.target} missing)`).join('; ')}`,
-        evidence: { orphans, present_sheets: [...presentSheets], all_callouts: callouts_with_target },
+        message: `${lead}: ${findings.join('; ')} — not in the uploaded set`,
+        evidence: { orphans, orphans_by_target: Object.fromEntries(orphansByTarget), present_sheets: [...presentSheets], all_callouts: callouts_with_target },
       };
     }
     case 'title_block_count': {
@@ -276,16 +322,168 @@ function evalLogicRule(spec: LogicRuleSpec, input: CheckEvaluationInput): CheckE
   }
 }
 
+interface SheetSlice {
+  /** The most-frequent A### token on this slice (proxy for the title-block sheet ID), or null when no sheet identifier is extractable. */
+  sheet_id: string | null;
+  /** The source file name from the `=== FILE: name.pdf ===` marker, or null when the combined text has no file markers. */
+  file: string | null;
+  /** 1-indexed page number within that file from the `--- PAGE N ---` marker, or null when no page markers are present. */
+  page_idx: number | null;
+  /** Trimmed page text. */
+  text: string;
+}
+
 /**
- * Split positioned-text extracted output by the `--- PAGE N ---` markers
- * the pdfjs extractor emits. Falls back to single-page if no markers exist.
+ * Split positioned-text extracted output into per-sheet slices, preserving
+ * source file + page number + a best-effort sheet identifier (A###). The
+ * upload route concatenates multiple PDFs with `=== FILE: name.pdf ===`
+ * separators; the pdfjs extractor adds `--- PAGE N ---` markers within each
+ * file. When neither marker is present, returns a single slice covering the
+ * whole text.
+ *
+ * Sheet-ID heuristic: the most-frequent `A\d{3}` token on the page wins.
+ * Title blocks repeat the sheet number multiple times (e.g. "A102", "A102 1:100");
+ * stray callouts like "S1/A107" only appear once or twice. Ties resolve to the
+ * lexicographically smaller token, which is deterministic but arbitrary.
  */
-function splitByPage(text: string): string[] {
-  if (!text.includes('--- PAGE ')) return [text];
-  return text
-    .split(/\n--- PAGE \d+ ---\n/)
-    .map((s) => s.trim())
-    .filter(Boolean);
+function sliceBySheet(text: string): SheetSlice[] {
+  if (!text) return [];
+
+  // Split by FILE marker first; if none, treat the whole text as one anonymous
+  // file. Pattern matches `=== FILE: <name> ===` on its own line.
+  const fileSplitRe = /(?:^|\n)===\s*FILE:\s*([^=\n]+?)\s*===\s*\n/g;
+  const fileBlocks: Array<{ file: string | null; body: string }> = [];
+  let lastEnd = 0;
+  let m: RegExpExecArray | null;
+  let currentFile: string | null = null;
+  while ((m = fileSplitRe.exec(text)) !== null) {
+    if (m.index > lastEnd) {
+      fileBlocks.push({ file: currentFile, body: text.slice(lastEnd, m.index) });
+    }
+    currentFile = m[1].trim();
+    lastEnd = fileSplitRe.lastIndex;
+  }
+  fileBlocks.push({ file: currentFile, body: text.slice(lastEnd) });
+  const usableBlocks = fileBlocks.filter((b) => b.body.trim().length > 0);
+  if (usableBlocks.length === 0) return [];
+
+  const slices: SheetSlice[] = [];
+  for (const block of usableBlocks) {
+    // Split by PAGE marker within the file body. `--- PAGE 1 ---` is the
+    // canonical form the pdfjs extractor emits.
+    if (!/\n?---\s*PAGE\s+\d+\s+---\n?/i.test(block.body)) {
+      slices.push({
+        sheet_id: extractSheetId(block.body),
+        file: block.file,
+        page_idx: null,
+        text: block.body.trim(),
+      });
+      continue;
+    }
+    // Capture the page number from each marker so we can report it back.
+    const pageMarkerRe = /\n?---\s*PAGE\s+(\d+)\s+---\n?/gi;
+    const pageIdxs: number[] = [];
+    let pm: RegExpExecArray | null;
+    while ((pm = pageMarkerRe.exec(block.body)) !== null) {
+      pageIdxs.push(parseInt(pm[1], 10));
+    }
+    const parts = block.body.split(/\n?---\s*PAGE\s+\d+\s+---\n?/i).map((s) => s.trim());
+    // Drop any pre-first-marker prefix (usually empty); align parts with pageIdxs.
+    const pageParts = parts[0].length === 0 ? parts.slice(1) : parts;
+    for (let i = 0; i < pageParts.length; i++) {
+      const pageText = pageParts[i];
+      if (pageText.length === 0) continue;
+      slices.push({
+        sheet_id: extractSheetId(pageText),
+        file: block.file,
+        page_idx: pageIdxs[i] ?? null,
+        text: pageText,
+      });
+    }
+  }
+  return slices;
+}
+
+/**
+ * Heuristic — return the most-frequent `A\d{3}` token on a page, or null when
+ * no candidate exists. Title blocks tend to repeat the sheet number ≥3 times
+ * (top-right stamp, scale marker, drawing reference). Ties resolve to the
+ * lexicographically smaller token for determinism.
+ */
+function extractSheetId(pageText: string): string | null {
+  const tokens = pageText.match(/\bA\d{3}\b/g);
+  if (!tokens || tokens.length === 0) return null;
+  const counts = new Map<string, number>();
+  for (const t of tokens) counts.set(t, (counts.get(t) ?? 0) + 1);
+  let best: string | null = null;
+  let bestCount = 0;
+  for (const [t, c] of counts) {
+    if (c > bestCount || (c === bestCount && best !== null && t < best)) {
+      best = t;
+      bestCount = c;
+    }
+  }
+  return best;
+}
+
+/**
+ * Pre-scoper: identify site-wide candidate sheets — sheets that depict the
+ * subdivision as a whole (multiple units), used by manual-check rules that
+ * need to bind their LLM context to specific sheets. A sheet is a candidate
+ * when it carries a SITE PLAN / FENCING PLAN header OR has ≥3 distinct unit
+ * references.
+ */
+interface SiteWideEvidence {
+  candidate_sheets: Array<{
+    sheet_id: string | null;
+    file: string | null;
+    page_idx: number | null;
+    distinct_units: number;
+    header_match: string | null;
+  }>;
+  scoped_text: string;
+}
+
+function detectSiteWideSheets(combinedText: string): SiteWideEvidence {
+  const slices = sliceBySheet(combinedText);
+  const candidates: SiteWideEvidence['candidate_sheets'] = [];
+  const scopedChunks: string[] = [];
+
+  const headerRe = /\b(SITE\s+PLAN|FENCING\s+PLAN|LOCATION\s+PLAN|SUBDIVISION\s+PLAN|MASTER\s+PLAN)\b/i;
+
+  for (const slice of slices) {
+    const unitMatches = slice.text.matchAll(/\bunit\s+(\d{1,3})\b/gi);
+    const distinct = new Set<number>();
+    for (const um of unitMatches) {
+      const n = parseInt(um[1], 10);
+      if (n >= 1 && n <= 999) distinct.add(n);
+    }
+    const headerMatch = slice.text.match(headerRe);
+    const isCandidate = distinct.size >= 3 || !!headerMatch;
+    if (!isCandidate) continue;
+    candidates.push({
+      sheet_id: slice.sheet_id,
+      file: slice.file,
+      page_idx: slice.page_idx,
+      distinct_units: distinct.size,
+      header_match: headerMatch ? headerMatch[0] : null,
+    });
+    const label = formatSheetLabel(slice);
+    scopedChunks.push(`[${label}]\n${slice.text}`);
+  }
+
+  return {
+    candidate_sheets: candidates,
+    scoped_text: scopedChunks.join('\n\n---\n\n'),
+  };
+}
+
+function formatSheetLabel(slice: SheetSlice): string {
+  const parts: string[] = [];
+  if (slice.sheet_id) parts.push(`SHEET ${slice.sheet_id}`);
+  if (slice.file) parts.push(`file=${slice.file}`);
+  if (slice.page_idx !== null) parts.push(`page=${slice.page_idx}`);
+  return parts.length > 0 ? parts.join(' ') : 'SHEET (unidentified)';
 }
 
 function evalCrossRef(spec: CrossRefSpec, input: CheckEvaluationInput): CheckEvaluationResult {

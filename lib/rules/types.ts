@@ -94,6 +94,18 @@ export interface ManualCheckSpec {
    * eyes" most of the time. Used for telemetry and to tweak the prompt.
    */
   requires_geometric_reasoning?: boolean;
+  /**
+   * Optional deterministic pre-scoper. When set, the engine runs the named
+   * helper before deferring to the LLM and replaces the LLM's extracted-text
+   * context with the pre-scoped slice. Structured findings are also handed
+   * to the LLM as evidence so it can cite specific sheets in its answer.
+   *
+   * Supported values:
+   *   'site_wide_sheets' — narrow context to sheets that depict multiple
+   *     units (SITE/FENCING/LOCATION PLAN headers OR ≥3 distinct unit
+   *     references). Used by the multi-unit title-block scope check.
+   */
+  pre_scope?: 'site_wide_sheets';
 }
 
 export interface ProjectUnit {

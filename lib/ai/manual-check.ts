@@ -22,6 +22,25 @@ interface KbChunk {
   similarity: number;
 }
 
+/**
+ * Deterministic pre-scoping evidence produced by the engine when a rule
+ * declares `spec.pre_scope`. When supplied, `scoped_text` replaces the
+ * caller's `extractedText` (so the LLM doesn't waste context on irrelevant
+ * sheets) and the structured `candidates` are mentioned in the prompt so
+ * the LLM can cite specific sheets in its answer.
+ */
+export interface PreScopeEvidence {
+  pre_scope: string;
+  candidates: Array<{
+    sheet_id: string | null;
+    file: string | null;
+    page_idx: number | null;
+    distinct_units?: number;
+    header_match?: string | null;
+  }>;
+  scoped_text: string | null;
+}
+
 const SYSTEM = `You are evaluating a single drawing-set rule for a building DA pre-submission triage tool.
 
 You are NOT reviewing the drawing. You are answering ONE specific yes/no/unsure question against ONE excerpt of extracted text.
@@ -40,11 +59,14 @@ export async function runManualCheck(
   facts: Record<string, string>,
   projectId: string,
   db?: SupabaseClient,
+  preScope?: PreScopeEvidence,
 ): Promise<CheckEvaluationResult> {
-  // Slice extracted text by hint terms to keep the LLM context tight
+  // When the engine pre-scoped the context, swap in its slice — the LLM
+  // gets the focused subset of sheets, not the full upload.
+  const sourceText = preScope?.scoped_text ?? extractedText;
   const slices = (spec.context_hints && spec.context_hints.length)
-    ? extractContextSlices(extractedText, spec.context_hints)
-    : extractedText.slice(0, 4000);
+    ? extractContextSlices(sourceText, spec.context_hints)
+    : sourceText.slice(0, 4000);
 
   const factsBlock = Object.entries(facts)
     .map(([k, v]) => `- ${k}: ${v}`)
@@ -75,11 +97,27 @@ export async function runManualCheck(
     ? `\n\nIMPORTANT: This rule requires spatial / geometric reasoning (distances, radii, relative positions). The extracted text does NOT carry 2D coordinates — you typically cannot answer "is X at least N mm from Y" reliably. Default to "unsure" and tell the drafter what to check by eye; do not invent measurements.`
     : '';
 
+  // Pre-scope context block. When the engine narrowed the context to
+  // specific sheets (e.g. site-wide-candidates for the title-block rule),
+  // tell the LLM which sheets are in scope so its answer can name them.
+  const preScopeBlock = preScope && preScope.candidates.length > 0
+    ? `\n\nDeterministic pre-scoping (${preScope.pre_scope}): the engine narrowed the context to the following candidate sheet(s). The "excerpts" section below contains ONLY these sheets. When you fail or flag, cite the specific sheet by its sheet_id.\n${preScope.candidates
+        .map((c, i) => {
+          const id = c.sheet_id ?? '(unidentified sheet)';
+          const loc = c.file ? `file=${c.file}${c.page_idx !== null ? `, page=${c.page_idx}` : ''}` : c.page_idx !== null ? `page=${c.page_idx}` : '';
+          const hits: string[] = [];
+          if (typeof c.distinct_units === 'number') hits.push(`${c.distinct_units} distinct unit refs`);
+          if (c.header_match) hits.push(`header="${c.header_match}"`);
+          return `  [${i + 1}] ${id}${loc ? ` (${loc})` : ''}${hits.length ? ` — ${hits.join(', ')}` : ''}`;
+        })
+        .join('\n')}`
+    : '';
+
   const userPrompt = `Project facts:
 ${factsBlock}
 
 Question to answer:
-${spec.prompt}${geometricHint}
+${spec.prompt}${geometricHint}${preScopeBlock}
 ${kbBlock}
 
 Relevant extracted-text excerpts from the drawing set:

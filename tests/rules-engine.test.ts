@@ -105,8 +105,9 @@ describe('evalLogicRule: unit_numbering_set (expected_count path)', () => {
       }),
     );
     expect(r.outcome).toBe('fail');
-    expect(r.message).toContain('missing units: 4');
-    expect(r.message).toContain('duplicated units: 2');
+    expect(r.message).toContain('unit 4 missing');
+    expect(r.message).toContain('unit 2 (×2)');
+    expect(r.message).toMatch(/^Letterbox bank:/);
   });
 });
 
@@ -182,7 +183,24 @@ describe('evalLogicRule: orphan_section_callouts', () => {
       }),
     );
     expect(r.outcome).toBe('fail');
-    expect(r.message).toContain('A107 missing');
+    expect(r.message).toContain('Missing referenced sheet');
+    expect(r.message).toContain('A107');
+    expect(r.message).toContain('not in the uploaded set');
+  });
+
+  it('groups multiple orphan callouts pointing at the same missing sheet', () => {
+    // 3 callouts all targeting A107; A107 itself never appears as a sheet
+    // identifier. Should produce one finding, not three.
+    const r = evaluateRow(
+      makeInput(row({ kind: 'logic-rule', logic: 'orphan_section_callouts' }), {
+        extractedText: 'A102 floor plan refs S1/A107, D3/A107, and E1/A107.',
+      }),
+    );
+    expect(r.outcome).toBe('fail');
+    expect(r.message).toContain('3 callouts reference A107');
+    expect(r.message).toContain('S1/A107');
+    expect(r.message).toContain('D3/A107');
+    expect(r.message).toContain('E1/A107');
   });
 
   it('returns not-applicable when no section callouts at all', () => {
@@ -230,5 +248,80 @@ describe('manual-check defer', () => {
     );
     expect(r.outcome).toBe('unsure');
     expect(r.evidence?.defer_to_llm).toBe(true);
+  });
+
+  it('attaches site-wide-sheets pre-scope evidence when pre_scope is set', () => {
+    const text = [
+      '=== FILE: planning.pdf ===',
+      '--- PAGE 1 ---',
+      'A102 FLOOR PLAN UNIT 1',
+      'CLIENT: WBFREE Pty Ltd ADDRESS: UNIT 1, LOT 442 (#31) HALF MOON DRIVE',
+      'A102 1:100',
+      '--- PAGE 2 ---',
+      'A103 ELEVATIONS UNIT 1',
+      'CLIENT: WBFREE Pty Ltd ADDRESS: UNIT 1, LOT 442 (#31)',
+      'A103 1:100',
+      '=== FILE: fencing.pdf ===',
+      '--- PAGE 1 ---',
+      'A109 FENCING PLAN',
+      'PROPOSED RESIDENCE (UNIT 1) PROPOSED RESIDENCE (UNIT 2)',
+      'PROPOSED RESIDENCE (UNIT 3) PROPOSED RESIDENCE (UNIT 4)',
+      'PROPOSED RESIDENCE (UNIT 5) PROPOSED RESIDENCE (UNIT 6)',
+      'PROPOSED RESIDENCE (UNIT 7) PROPOSED RESIDENCE (UNIT 8)',
+      'CLIENT: WBFREE Pty Ltd ADDRESS: UNIT 1, LOT 442 (#31)',
+      'A109 1:250 A109 1:250',
+    ].join('\n');
+
+    const r = evaluateRow(
+      makeInput(
+        row(
+          {
+            kind: 'manual-check',
+            prompt: 'Does the title block scope match the sheet scope?',
+            pre_scope: 'site_wide_sheets',
+          },
+          'hard-fail',
+        ),
+        { extractedText: text },
+      ),
+    );
+    expect(r.outcome).toBe('unsure');
+    const ev = r.evidence as Record<string, unknown>;
+    expect(ev.defer_to_llm).toBe(true);
+    expect(ev.pre_scope).toBe('site_wide_sheets');
+    const candidates = ev.pre_scope_candidates as Array<Record<string, unknown>>;
+    // A109 has the FENCING PLAN header + 8 distinct unit references — candidate.
+    // A102 / A103 each show only UNIT 1 once — not candidates.
+    expect(candidates.length).toBe(1);
+    expect(candidates[0].sheet_id).toBe('A109');
+    expect(candidates[0].file).toBe('fencing.pdf');
+    expect(candidates[0].distinct_units).toBe(8);
+    expect(candidates[0].header_match).toMatch(/FENCING\s+PLAN/i);
+    expect(typeof ev.pre_scoped_text).toBe('string');
+    expect((ev.pre_scoped_text as string)).toContain('SHEET A109');
+    expect((ev.pre_scoped_text as string)).not.toContain('A102 FLOOR PLAN');
+  });
+
+  it('skips pre-scope evidence when no candidate sheets exist', () => {
+    const text = '--- PAGE 1 ---\nA102 FLOOR PLAN UNIT 1\nA102 1:100';
+    const r = evaluateRow(
+      makeInput(
+        row(
+          {
+            kind: 'manual-check',
+            prompt: 'Does the title block scope match?',
+            pre_scope: 'site_wide_sheets',
+          },
+          'hard-fail',
+        ),
+        { extractedText: text },
+      ),
+    );
+    expect(r.outcome).toBe('unsure');
+    const ev = r.evidence as Record<string, unknown>;
+    expect(ev.pre_scope).toBe('site_wide_sheets');
+    expect(ev.pre_scope_candidates).toEqual([]);
+    // No scoped_text when no candidates — falls back to full extracted text.
+    expect(ev.pre_scoped_text).toBeUndefined();
   });
 });
