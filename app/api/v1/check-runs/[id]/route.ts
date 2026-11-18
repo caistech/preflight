@@ -6,7 +6,7 @@
 import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import { authenticateApiKey, keyReachesProject } from '@/lib/api-key';
-import { fail } from '@/lib/api-v1';
+import { describeRun, fail, RUN_COLUMNS, type RunRow } from '@/lib/api-v1';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,28 +18,12 @@ export async function GET(request: Request, { params }: { params: { id: string }
   if ('error' in auth) return fail(auth.status, auth.error);
   if (!UUID.test(params.id)) return fail(404, 'No such check run for this key');
 
-  const { data: run, error } = await db
-    .from('check_runs')
-    .select('id, project_id, status, started_at, completed_at, hard_fails, needs_review, confirmed_ok, triage_payload, error')
-    .eq('id', params.id)
-    .maybeSingle();
+  const { data, error } = await db.from('check_runs').select(RUN_COLUMNS).eq('id', params.id).maybeSingle();
   if (error) return fail(503, "Couldn't read that check run just now");
+  const run = data as RunRow | null;
   if (!run || !keyReachesProject(auth.key, run.project_id)) return fail(404, 'No such check run for this key');
 
-  const status = run.status === 'complete' ? 'completed' : run.status;
-  return NextResponse.json({
-    ok: true,
-    run: {
-      id: run.id,
-      projectId: run.project_id,
-      status,
-      startedAt: run.started_at,
-      completedAt: run.completed_at,
-      counts: status === 'completed'
-        ? { hardFails: run.hard_fails, needsReview: run.needs_review, confirmedOk: run.confirmed_ok }
-        : null,
-      result: status === 'completed' ? run.triage_payload : null,
-      error: status === 'failed' ? run.error ?? 'The check did not finish.' : null,
-    },
-  });
+  const { data: project } = await db.from('projects').select('name').eq('id', run.project_id).maybeSingle();
+  const described = describeRun(run, (project?.name as string | undefined) ?? 'project');
+  return NextResponse.json({ ok: true, run: described, message: described.message });
 }

@@ -95,7 +95,18 @@ export async function POST(request: Request, { params }: { params: { id: string 
   );
 
   return NextResponse.json(
-    { ok: true, runId: opened.runId, status: 'running', replayed: false, files: opened.fileSummaries },
+    {
+      ok: true,
+      runId: opened.runId,
+      status: 'running',
+      replayed: false,
+      files: opened.fileSummaries,
+      // Said as-is by the caller. It promises nothing it cannot keep: the run is started, the
+      // result is not known, and the way to get it is to ask.
+      message:
+        `the ${gate.projectName} check has started on ${opened.fileSummaries.map((f) => f.name).join(', ')}. ` +
+        'It usually takes a minute or two; ask how it went and I will read you what it found.',
+    },
     { status: 202 },
   );
 }
