@@ -1,6 +1,7 @@
 // POST /api/v1/projects/:id/check-runs — start a check of one or more Drive PDFs.
 //
-// Body: { requestId: string, driveFileIds: string[] }
+// Body: { requestId?: string, driveFileIds: string[] }, or the request id as an `Idempotency-Key`
+// header — which is how the orchestrator sends it (the effect row's id, on every write).
 //
 // RETURNS BEFORE THE CHECK FINISHES. A run can take minutes (manual-check rows go to
 // the model), far longer than a voice turn or an orchestrator call should wait. The
@@ -44,7 +45,9 @@ export async function POST(request: Request, { params }: { params: { id: string 
   if ('response' in gate) return gate.response;
 
   const body = (await request.json().catch(() => null)) as { requestId?: unknown; driveFileIds?: unknown } | null;
-  const requestId = typeof body?.requestId === 'string' ? body.requestId.trim() : '';
+  const requestId =
+    (typeof body?.requestId === 'string' ? body.requestId.trim() : '') ||
+    (request.headers.get('idempotency-key') ?? '').trim();
   const ids = Array.isArray(body?.driveFileIds)
     ? [...new Set(body!.driveFileIds.filter((x): x is string => typeof x === 'string' && x.trim() !== '').map((x) => x.trim()))]
     : [];

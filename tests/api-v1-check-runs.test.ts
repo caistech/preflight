@@ -86,6 +86,19 @@ describe('starting a check', () => {
     expect(state.openRun).not.toHaveBeenCalled();
   });
 
+  it('takes the request id from an Idempotency-Key header, as the orchestrator sends it', async () => {
+    const res = await POST(
+      new Request('https://x.test', {
+        method: 'POST',
+        headers: { 'idempotency-key': 'effect-9' },
+        body: JSON.stringify({ driveFileIds: ['f1'] }),
+      }),
+      { params: { id: 'lot-91-wavecrest' } },
+    );
+    expect(res.status).toBe(202);
+    expect(state.openRun.mock.calls[0][5]).toEqual({ request_id: 'effect-9' });
+  });
+
   it('a retry with the same request id returns the run it already started', async () => {
     state.existing = { id: 'run-0', status: 'running' };
     const body = await (await call({ requestId: 'r1', driveFileIds: ['f1'] })).json();
