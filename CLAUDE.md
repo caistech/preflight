@@ -88,6 +88,11 @@ Ingest correspondence:                   Triage sheet renders inline
 - `app/api/webhooks/resend-inbound` — Resend inbound webhook (stores raw)
 - `app/api/drive/oauth` + `app/api/drive/oauth/callback` — Drive OAuth flow
 - `app/api/cron/drive-sync` — cron handler (stub sync for v0)
+- `app/api/v1/*` — machine API for Kira (through the orchestrator), authenticated by a per-caller
+  API key (`lib/api-key.ts`, keys minted with `scripts/create-api-key.mjs`, scoped to listed
+  projects): `GET projects`, `GET projects/:id/register`, `POST projects/:id/check-runs` (Drive
+  file ids → run id, evaluation continues after the reply via `waitUntil`), `GET check-runs/:id`.
+  The engine is `lib/check-run.ts`, shared with the drafter upload so the two can never disagree.
 
 ---
 

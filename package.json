@@ -19,6 +19,7 @@
     "@caistech/mapbox": "^0.2.0",
     "@supabase/ssr": "^0.8.0",
     "@supabase/supabase-js": "^2.89.0",
+    "@vercel/functions": "3.10.4",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "googleapis": "^144.0.0",

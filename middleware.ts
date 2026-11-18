@@ -12,6 +12,8 @@ const PUBLIC_ROUTES = [
   '/api/cron/',
   '/api/drafter/',
   '/drafter/',
+  // Machine API: every route authenticates its own API key (lib/api-key.ts).
+  '/api/v1/',
 ];
 
 const PROTECTED_PREFIXES = [
