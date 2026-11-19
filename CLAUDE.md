@@ -91,8 +91,18 @@ Ingest correspondence:                   Triage sheet renders inline
 - `app/api/v1/*` — machine API for Kira (through the orchestrator), authenticated by a per-caller
   API key (`lib/api-key.ts`, keys minted with `scripts/create-api-key.mjs`, scoped to listed
   projects): `GET projects`, `GET projects/:id/register`, `POST projects/:id/check-runs` (Drive
-  file ids → run id, evaluation continues after the reply via `waitUntil`), `GET check-runs/:id`.
+  file ids → run id, evaluation continues after the reply via `waitUntil`; `reread: true` discards
+  saved sheet readings), `GET check-runs/:id`, `POST projects/:id/rule-changes` (the owner's words →
+  a PENDING rule change; applies only when approved in Preflight).
   The engine is `lib/check-run.ts`, shared with the drafter upload so the two can never disagree.
+- Repeatable checks: drawn sheets are read once and the reading saved per (content sha256,
+  `READER_VERSION`) in `sheet_readings` (`lib/pdf/sheet-readings.ts`) — bump `READER_VERSION` in
+  `lib/pdf/transcribe.ts` whenever the reading prompt/model changes. Transcription and manual checks
+  run at temperature 0. A manual-check fail must quote words that are on the sheet
+  (`lib/rules/evidence.ts`) or it is recorded as unsure. `scripts/gate-s262646.mjs` checks the saved
+  Lot 91 readings contain the notes that matter.
+- Rule changes replace the rule they change: `register_row_candidates.amends_register_row_id` →
+  `approve_register_amendment()` (migration 0030) switches the old rule off and links the new one.
 
 ---
 

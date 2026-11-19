@@ -19,6 +19,7 @@ import { createServiceClient } from '@/lib/supabase/service';
 import { fail, projectForKey } from '@/lib/api-v1';
 import { fetchDriveFileForProject } from '@/lib/drive/fetch-file';
 import { CheckRunError, evaluateRun, openRun, type CheckFile, type LogFn } from '@/lib/check-run';
+import { savedReadingTranscriber } from '@/lib/pdf/sheet-readings';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
@@ -44,7 +45,14 @@ export async function POST(request: Request, { params }: { params: { id: string 
   const gate = await projectForKey(db, request, params.id);
   if ('response' in gate) return gate.response;
 
-  const body = (await request.json().catch(() => null)) as { requestId?: unknown; driveFileIds?: unknown } | null;
+  const body = (await request.json().catch(() => null)) as {
+    requestId?: unknown;
+    driveFileIds?: unknown;
+    reread?: unknown;
+  } | null;
+  // `reread: true` throws away the saved reading of every drawn sheet in the set and
+  // reads it again — the way out when a saved reading turns out to have missed something.
+  const reread = body?.reread === true;
   const requestId =
     (typeof body?.requestId === 'string' ? body.requestId.trim() : '') ||
     (request.headers.get('idempotency-key') ?? '').trim();
@@ -89,7 +97,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
   // The slow part. evaluateRun marks the run `failed` itself if anything throws,
   // so a crash here can never leave a run that reads as finished-and-clean.
   waitUntil(
-    evaluateRun(db, gate.projectId, opened, log).catch((e) => {
+    evaluateRun(db, gate.projectId, opened, log, savedReadingTranscriber(db, log, { reread })).catch((e) => {
       log('background-failed', { message: (e as Error).message });
     }),
   );
