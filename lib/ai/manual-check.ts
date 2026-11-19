@@ -145,6 +145,8 @@ Answer with the JSON object as instructed. Remember: unsure is valid; never inve
       const msg = await anthropic().messages.create({
         model: MODEL_MANUAL_CHECK,
         max_tokens: 600,
+        // One question, one answer: the same text must get the same verdict on every run.
+        temperature: 0,
         system: SYSTEM,
         messages: [{ role: 'user', content }],
       });

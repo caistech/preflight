@@ -24,6 +24,13 @@
 
 import { anthropic, anthropicIsDirect, MODEL_MANUAL_CHECK } from '@/lib/ai/anthropic';
 
+/**
+ * Which reader produced a saved reading (lib/pdf/sheet-readings.ts). Bump it whenever
+ * the prompt, model or settings below change, so every sheet is read again by the new
+ * reader instead of a stale reading being reused.
+ */
+export const READER_VERSION = 'pdf-document-temp0-2026-11-19';
+
 /** Below this many meaningful characters a sheet is treated as unread. */
 export const READABLE_MIN_CHARS = 50;
 
@@ -82,6 +89,9 @@ export async function transcribePdf(
       {
         model: MODEL_MANUAL_CHECK,
         max_tokens: 8000,
+        // A transcription is a copy, not a composition. At the default temperature
+        // the same sheet read differently on every run (S262646, 2026-11-19).
+        temperature: 0,
         system: SYSTEM,
         messages: [
           {

@@ -15,7 +15,8 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { extractPdf } from '@/lib/pdf/extract';
-import { isUnread, transcribePdf, type TranscribeResult } from '@/lib/pdf/transcribe';
+import { isUnread, transcribePdf } from '@/lib/pdf/transcribe';
+import { savedReadingTranscriber, type Transcriber } from '@/lib/pdf/sheet-readings';
 import { evaluateRow } from '@/lib/rules/engine';
 import { runManualCheck, type PreScopeEvidence } from '@/lib/ai/manual-check';
 import type { RegisterRow, CheckEvaluationResult, ManualCheckSpec, ProjectUnit } from '@/lib/rules/types';
@@ -73,8 +74,6 @@ export interface OpenedRun {
 }
 
 const fileSection = (name: string, text: string) => `=== FILE: ${name} ===\n${text}`;
-
-type Transcriber = (name: string, bytes: Buffer, pages: number) => Promise<TranscribeResult>;
 
 /**
  * Read every unread file from its drawing image, four at a time, and fold the
@@ -289,13 +288,16 @@ async function loadContext(db: SupabaseClient, projectId: string, log: LogFn) {
 /**
  * Evaluate every active row against an opened run and write the outcome.
  * Marks the run `failed` (never `completed`) if anything throws.
+ *
+ * Unread sheets go through the saved readings (lib/pdf/sheet-readings.ts) by default,
+ * so the same file is read once and every later run checks the same text.
  */
 export async function evaluateRun(
   db: SupabaseClient,
   projectId: string,
   opened: OpenedRun,
   log: LogFn,
-  transcribe: Transcriber = transcribePdf,
+  transcribe: Transcriber = savedReadingTranscriber(db, log),
 ): Promise<TriagePayload> {
   try {
     const unreadable = await readUnreadFiles(opened, log, transcribe);
