@@ -19,6 +19,7 @@ import { isUnread, transcribePdf } from '@/lib/pdf/transcribe';
 import { savedReadingTranscriber, type Transcriber } from '@/lib/pdf/sheet-readings';
 import { evaluateRow } from '@/lib/rules/engine';
 import { runManualCheck, type PreScopeEvidence } from '@/lib/ai/manual-check';
+import { holdFailToItsQuote } from '@/lib/rules/evidence';
 import type { RegisterRow, CheckEvaluationResult, ManualCheckSpec, ProjectUnit } from '@/lib/rules/types';
 
 export interface ResultLine {
@@ -363,8 +364,15 @@ export async function evaluateRun(
             `manual-check[${row.id}]`,
           )
             .then((r) => {
-              log('manual-check-done', { rowId: row.id, outcome: r.outcome, llmMs: Date.now() - tLlm });
-              return r;
+              // A fail has to point at words that are on the sheet before it can be one.
+              const held = holdFailToItsQuote(r, combinedText, opened.sections);
+              log('manual-check-done', {
+                rowId: row.id,
+                outcome: held.outcome,
+                ...(held.outcome !== r.outcome ? { downgradedFrom: r.outcome } : {}),
+                llmMs: Date.now() - tLlm,
+              });
+              return held;
             })
             .catch((e) => {
               const err = e as Error;

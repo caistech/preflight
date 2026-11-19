@@ -46,7 +46,8 @@ const SYSTEM = `You are evaluating a single drawing-set rule for a building DA p
 You are NOT reviewing the drawing. You are answering ONE specific yes/no/unsure question against ONE excerpt of extracted text.
 
 Output rules:
-- Return ONLY a JSON object on the LAST line of your response: {"outcome": "pass" | "fail" | "unsure", "message": "<one sentence>"}.
+- Return ONLY a JSON object on the LAST line of your response: {"outcome": "pass" | "fail" | "unsure", "message": "<one sentence>", "quote": "<words copied exactly from the excerpts>", "sheet": "<file name or sheet number the quote is on>"}.
+- For "fail", "quote" is REQUIRED: copy, character for character, the words from the drawing-set excerpts that show the problem (at least a few words — e.g. a whole note or label). Never paraphrase, never quote the KB excerpts or the question. A fail whose quote is not found in the drawing text is not reported as a fail. For "pass" and "unsure", quote what supports the answer, or leave it "".
 - "unsure" is a valid and often the correct answer. Pick it whenever the extracted text doesn't clearly establish the answer.
 - NEVER suggest a specific value the tool could get wrong (e.g. a street name, a dimension, a regulatory citation). Names go in the human-review notes, not in the tool's output.
 - The "message" field is one sentence the drafter will read — neutral, factual, no blame language.
@@ -132,7 +133,7 @@ Answer with the JSON object as instructed. Remember: unsure is valid; never inve
   // explicit "format reminder" appended to the user prompt. Catches the
   // occasional case where the LLM forgets the JSON sentinel or trails text
   // after the closing brace. Caps at 2 attempts to keep cost bounded.
-  let parsed: { outcome?: string; message?: string } = {};
+  let parsed: { outcome?: string; message?: string; quote?: unknown; sheet?: unknown } = {};
   let raw = '';
   let lastError: string | null = null;
 
@@ -141,7 +142,7 @@ Answer with the JSON object as instructed. Remember: unsure is valid; never inve
       const content =
         attempt === 0
           ? userPrompt
-          : `${userPrompt}\n\nYour previous response did not end with a JSON object I could parse. Reply again — this time end with EXACTLY one JSON object on the last line: {"outcome": "pass"|"fail"|"unsure", "message": "<one sentence>"}. No trailing commentary after it.`;
+          : `${userPrompt}\n\nYour previous response did not end with a JSON object I could parse. Reply again — this time end with EXACTLY one JSON object on the last line: {"outcome": "pass"|"fail"|"unsure", "message": "<one sentence>", "quote": "<exact words from the excerpts>", "sheet": "<sheet>"}. No trailing commentary after it.`;
       const msg = await anthropic().messages.create({
         model: MODEL_MANUAL_CHECK,
         max_tokens: 600,
@@ -180,10 +181,15 @@ Answer with the JSON object as instructed. Remember: unsure is valid; never inve
   const validOutcomes = ['pass', 'fail', 'unsure'] as const;
   const safeOutcome = (validOutcomes as readonly string[]).includes(outcome) ? outcome : 'unsure';
 
+  // The quote and sheet travel with the result so the run can confirm a fail's
+  // evidence is really in the drawing text (lib/rules/evidence.ts).
+  const quote = typeof parsed.quote === 'string' ? parsed.quote : '';
+  const sheet = typeof parsed.sheet === 'string' ? parsed.sheet : '';
   return {
     outcome: safeOutcome,
     message: parsed.message ?? 'No specific finding (LLM returned outcome without message).',
     llm_reasoning: raw,
+    ...(quote || sheet ? { evidence: { quote, sheet } } : {}),
   };
 }
 
