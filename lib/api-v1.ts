@@ -37,7 +37,10 @@ const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one :
  */
 export function describeRun(run: RunRow, projectName: string, now: Date = new Date()) {
   const status = run.status === 'complete' ? 'completed' : run.status;
-  const payload = (run.triage_payload ?? null) as { files?: Array<{ name: string }> } | null;
+  const payload = (run.triage_payload ?? null) as {
+    files?: Array<{ name: string; extraction_method?: string }>;
+    unreadable_files?: string[];
+  } | null;
   const files = payload?.files?.map((f) => f.name) ?? [];
   const on = files.length ? ` on ${files.join(', ')}` : '';
   let message: string;
@@ -51,6 +54,16 @@ export function describeRun(run: RunRow, projectName: string, now: Date = new Da
       `The ${projectName} check${on} finished: ${plural(run.hard_fails ?? 0, 'hard fail', 'hard fails')}, ` +
       `${plural(run.needs_review ?? 0, 'item that needs eyes', 'items that need eyes')}, ` +
       `${run.confirmed_ok ?? 0} confirmed OK.`;
+    // How much of the set was actually looked at belongs in the same sentence as the counts:
+    // "0 hard fails" over a set with unread sheets is not a clean result.
+    const drawn = payload?.files?.filter((f) => f.extraction_method === 'vision').length ?? 0;
+    if (drawn > 0) {
+      message += ` ${drawn === files.length ? (drawn === 1 ? 'The sheet was' : `All ${drawn} sheets were`) : `${drawn} of the ${files.length} sheets were`} read from the drawing image, so check anything it flags against the sheet itself.`;
+    }
+    const unreadable = payload?.unreadable_files ?? [];
+    if (unreadable.length > 0) {
+      message += ` Nothing could be read from ${unreadable.join(', ')}, so ${unreadable.length === 1 ? 'that sheet was' : 'those sheets were'} not checked.`;
+    }
   }
   return {
     id: run.id,

@@ -15,6 +15,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { extractPdf } from '@/lib/pdf/extract';
+import { isUnread, transcribePdf, type TranscribeResult } from '@/lib/pdf/transcribe';
 import { evaluateRow } from '@/lib/rules/engine';
 import { runManualCheck, type PreScopeEvidence } from '@/lib/ai/manual-check';
 import type { RegisterRow, CheckEvaluationResult, ManualCheckSpec, ProjectUnit } from '@/lib/rules/types';
@@ -49,6 +50,71 @@ export interface TriagePayload {
   errors: number;
   warnings: string[];
   files: FileSummary[];
+  /** Files no text could be taken from, even from the drawing image. Nothing in them was checked. */
+  unreadable_files?: string[];
+}
+
+/** A file whose text layer was empty, waiting to be read from the drawing image. */
+export interface UnreadFile {
+  index: number;
+  file: CheckFile;
+  pages: number;
+}
+
+export interface OpenedRun {
+  runId: string;
+  drawingSetId?: string;
+  combinedText: string;
+  fileSummaries: FileSummary[];
+  warnings: string[];
+  /** One `=== FILE: … ===` section per file, in upload order. */
+  sections?: string[];
+  unread?: UnreadFile[];
+}
+
+const fileSection = (name: string, text: string) => `=== FILE: ${name} ===\n${text}`;
+
+type Transcriber = (name: string, bytes: Buffer, pages: number) => Promise<TranscribeResult>;
+
+/**
+ * Read every unread file from its drawing image, four at a time, and fold the
+ * transcriptions back into the run. Returns the names that still could not be read.
+ * Mutates `opened` so the evaluation below sees the transcribed text.
+ */
+export async function readUnreadFiles(
+  opened: OpenedRun,
+  log: LogFn,
+  transcribe: Transcriber = transcribePdf,
+): Promise<Array<{ name: string; reason: string }>> {
+  const unread = opened.unread ?? [];
+  if (unread.length === 0 || !opened.sections) return [];
+
+  const stillUnread: Array<{ name: string; reason: string }> = [];
+  const queue = [...unread];
+  const worker = async () => {
+    for (let next = queue.shift(); next; next = queue.shift()) {
+      const { index, file, pages } = next;
+      log('vision-read-start', { name: file.name, bytes: file.bytes.byteLength });
+      const got = await transcribe(file.name, file.bytes, pages);
+      // `in`, not `.ok`: tsconfig has strict:false, which does not narrow on a boolean tag.
+      if ('text' in got) {
+        opened.sections![index] = fileSection(file.name, got.text);
+        opened.fileSummaries[index] = { ...opened.fileSummaries[index], extraction_method: 'vision' };
+        log('vision-read-done', { name: file.name, textLen: got.text.length, ms: got.ms });
+      } else {
+        stillUnread.push({ name: file.name, reason: got.reason });
+        opened.warnings.push(`${file.name}: no text could be read — ${got.reason}. Nothing on this sheet was checked.`);
+        log('vision-read-failed', { name: file.name, reason: got.reason });
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(4, unread.length) }, worker));
+
+  opened.combinedText = opened.sections.join('\n\n');
+  opened.unread = [];
+  // Keep upload order in what the caller reads back.
+  const order = new Map(opened.fileSummaries.map((f, i) => [f.name, i]));
+  return stillUnread.sort((a, b) => (order.get(a.name) ?? 0) - (order.get(b.name) ?? 0));
 }
 
 export type LogFn = (phase: string, extra?: Record<string, unknown>) => void;
@@ -85,14 +151,15 @@ export async function openRun(
   origin: RunOrigin,
   log: LogFn,
   extra: Record<string, unknown> = {},
-): Promise<{ runId: string; drawingSetId: string; combinedText: string; fileSummaries: FileSummary[]; warnings: string[] }> {
+): Promise<OpenedRun & { drawingSetId: string }> {
   const fileSummaries: FileSummary[] = [];
   const sections: string[] = [];
   const warnings: string[] = [];
+  const unread: UnreadFile[] = [];
   let totalBytes = 0;
   let totalPages = 0;
 
-  for (const file of files) {
+  for (const [index, file] of files.entries()) {
     const tFile = Date.now();
     log('pdf-extract-start', { name: file.name, bytes: file.bytes.byteLength });
     const extracted = await extractPdf(file.bytes);
@@ -110,8 +177,12 @@ export async function openRun(
       pages: extracted.page_count,
       extraction_method: extracted.extraction_method,
     });
-    sections.push(`=== FILE: ${file.name} ===\n${extracted.text}`);
-    warnings.push(...extracted.warnings);
+    sections.push(fileSection(file.name, extracted.text));
+    // A drawn sheet with no text layer is read from its image in evaluateRun (the slow,
+    // after-the-reply half), so its extractor warnings would only describe a problem
+    // that is about to be dealt with.
+    if (isUnread(extracted.text)) unread.push({ index, file, pages: extracted.page_count });
+    else warnings.push(...extracted.warnings);
     totalBytes += file.bytes.byteLength;
     totalPages += extracted.page_count;
   }
@@ -165,7 +236,7 @@ export async function openRun(
   }
   log('run-started', { checkRunId: run.id });
 
-  return { runId: run.id, drawingSetId: ds.id, combinedText, fileSummaries, warnings };
+  return { runId: run.id, drawingSetId: ds.id, combinedText, fileSummaries, warnings, sections, unread };
 }
 
 /** Load the project's facts, active register and units. */
@@ -222,10 +293,30 @@ async function loadContext(db: SupabaseClient, projectId: string, log: LogFn) {
 export async function evaluateRun(
   db: SupabaseClient,
   projectId: string,
-  opened: { runId: string; combinedText: string; fileSummaries: FileSummary[]; warnings: string[] },
+  opened: OpenedRun,
   log: LogFn,
+  transcribe: Transcriber = transcribePdf,
 ): Promise<TriagePayload> {
   try {
+    const unreadable = await readUnreadFiles(opened, log, transcribe);
+    // NOTHING READ, NOTHING CHECKED. A run over blank text "finishes" with every rule
+    // unsure — which reads out as "15 items need eyes" when the truth is that no sheet
+    // was looked at. That is a failed run, and it says which files and why.
+    if (unreadable.length > 0 && unreadable.length === opened.fileSummaries.length) {
+      const reasons = [...new Set(unreadable.map((u) => u.reason))];
+      throw new CheckRunError(
+        `Preflight couldn't read any text from ${unreadable.length === 1 ? unreadable[0].name : `the ${unreadable.length} sheets`}, ` +
+          `even from the drawing image (${reasons.slice(0, 2).join('; ')})`,
+      );
+    }
+    if (opened.drawingSetId && opened.fileSummaries.some((f) => f.extraction_method === 'vision')) {
+      const { error: dsErr } = await db
+        .from('drawing_sets')
+        .update({ extracted_text: opened.combinedText, extraction_method: 'vision' })
+        .eq('id', opened.drawingSetId);
+      if (dsErr) log('set-text-update-failed', { error: dsErr.message });
+    }
+
     const { facts, rows, units } = await loadContext(db, projectId, log);
     const { combinedText } = opened;
 
@@ -337,6 +428,7 @@ export async function evaluateRun(
       errors,
       warnings: opened.warnings,
       files: opened.fileSummaries,
+      ...(unreadable.length > 0 ? { unreadable_files: unreadable.map((u) => u.name) } : {}),
     };
 
     await db

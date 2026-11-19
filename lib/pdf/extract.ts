@@ -43,7 +43,7 @@ export async function extractPdf(buffer: Buffer): Promise<ExtractedSet> {
     const result = await pdfParse(buffer);
     const warnings: string[] = [...diagnostics];
     if (!result.text || result.text.length < 50) {
-      warnings.push('Both pdfjs-positioned and pdf-parse returned very little text — likely scanned/image-only PDF; OCR path not yet wired');
+      warnings.push('Both pdfjs-positioned and pdf-parse returned very little text — a drawn or scanned sheet; the check run reads it from the drawing image (lib/pdf/transcribe.ts)');
     }
     return {
       text: result.text || '',

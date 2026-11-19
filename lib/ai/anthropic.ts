@@ -26,5 +26,10 @@ export function anthropic(): Anthropic {
   return _client;
 }
 
+/** True when calls go to Anthropic itself — the only route that accepts a PDF document block. */
+export function anthropicIsDirect(): boolean {
+  return Boolean(process.env.ANTHROPIC_API_KEY);
+}
+
 export const MODEL_MANUAL_CHECK = process.env.PREFLIGHT_MODEL || 'claude-sonnet-4-5';
 export const MODEL_HAIKU = 'claude-haiku-4-5-20251001';
