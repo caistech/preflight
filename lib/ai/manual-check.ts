@@ -51,6 +51,7 @@ Output rules:
 - NEVER suggest a specific value the tool could get wrong (e.g. a street name, a dimension, a regulatory citation). Names go in the human-review notes, not in the tool's output.
 - The "message" field is one sentence the drafter will read — neutral, factual, no blame language.
 - Hard fails carry a sheet reference and the fix; pass results stay concise.
+- Some sheets were read from the drawing image because they had no text layer. Their text comes in two parts: "[WRITTEN ON THE SHEET …]" is what is printed on the sheet; "[WHAT THE DRAWING SHOWS …]" is a reader's description of what each detail draws. You may answer from the description (for example, what a member is fixed to), but say "the detail shows", never "the note says", when it is your source.
 `;
 
 export async function runManualCheck(

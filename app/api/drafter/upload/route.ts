@@ -99,7 +99,17 @@ async function handleUpload(request: NextRequest, log: LogFn) {
     throw e;
   }
 
-  const payload = await evaluateRun(db, projectId, opened, log);
+  let payload;
+  try {
+    payload = await evaluateRun(db, projectId, opened, log);
+  } catch (e) {
+    // evaluateRun has already marked the run failed. A set it could not read at all is the
+    // drafter's to fix (a different export), so it gets the sentence, not a bare 500.
+    if (e instanceof CheckRunError) {
+      return NextResponse.json({ error: `${e.message}. Nothing was checked.` }, { status: 422 });
+    }
+    throw e;
+  }
 
   await db
     .from('drafter_tokens')
