@@ -101,6 +101,38 @@ const VALID_SEVERITIES = ['hard-fail', 'review', 'info'] as const;
 const VALID_LOGIC_NAMES = ['unit_numbering_set', 'title_block_count', 'orphan_section_callouts'] as const;
 const MAX_CONTENT_CHARS = 12000;
 
+/**
+ * Why a proposed rule cannot be stored, or null when it can. Shared by every proposer
+ * so a rule drafted from a decision and one drafted from the owner's words are held to
+ * the same shape — a wrong check_type or a malformed spec pollutes every future run.
+ */
+export function proposalProblem(proposed: RuleProposal | null | undefined): string | null {
+  if (
+    !proposed ||
+    typeof proposed.requirement !== 'string' ||
+    proposed.requirement.trim().length < 10 ||
+    proposed.requirement.length > 500 ||
+    typeof proposed.source !== 'string' ||
+    proposed.source.trim().length < 3 ||
+    !(VALID_CHECK_TYPES as readonly string[]).includes(proposed.check_type) ||
+    !(VALID_SEVERITIES as readonly string[]).includes(proposed.severity) ||
+    typeof proposed.check_spec !== 'object' ||
+    proposed.check_spec === null
+  ) {
+    return 'Proposed rule failed validation (required fields missing or out of range)';
+  }
+  // check_spec sanity: must have kind matching check_type, and logic-rule
+  // must reference a known logic name.
+  const spec = proposed.check_spec as { kind?: string; logic?: string };
+  if (spec.kind !== proposed.check_type) {
+    return `check_spec.kind (${spec.kind}) does not match check_type (${proposed.check_type})`;
+  }
+  if (proposed.check_type === 'logic-rule' && !(VALID_LOGIC_NAMES as readonly string[]).includes(spec.logic ?? '')) {
+    return `logic-rule references unknown logic "${spec.logic}"`;
+  }
+  return null;
+}
+
 export async function proposeRuleFromDecision(
   db: SupabaseClient,
   input: ProposeRuleInput,
@@ -152,35 +184,9 @@ Propose a SINGLE register row that captures the operator's intent, suitable for 
     return { inserted: false, warnings };
   }
 
-  // Validate proposal fields.
-  if (
-    !proposed ||
-    typeof proposed.requirement !== 'string' ||
-    proposed.requirement.trim().length < 10 ||
-    proposed.requirement.length > 500 ||
-    typeof proposed.source !== 'string' ||
-    proposed.source.trim().length < 3 ||
-    !(VALID_CHECK_TYPES as readonly string[]).includes(proposed.check_type) ||
-    !(VALID_SEVERITIES as readonly string[]).includes(proposed.severity) ||
-    typeof proposed.check_spec !== 'object' ||
-    proposed.check_spec === null
-  ) {
-    warnings.push('Proposed rule failed validation (required fields missing or out of range)');
-    return { inserted: false, warnings };
-  }
-
-  // check_spec sanity: must have kind matching check_type, and logic-rule
-  // must reference a known logic name.
-  const spec = proposed.check_spec as { kind?: string; logic?: string };
-  if (spec.kind !== proposed.check_type) {
-    warnings.push(`check_spec.kind (${spec.kind}) does not match check_type (${proposed.check_type})`);
-    return { inserted: false, warnings };
-  }
-  if (
-    proposed.check_type === 'logic-rule' &&
-    !(VALID_LOGIC_NAMES as readonly string[]).includes(spec.logic ?? '')
-  ) {
-    warnings.push(`logic-rule references unknown logic "${spec.logic}"`);
+  const invalid = proposalProblem(proposed);
+  if (invalid) {
+    warnings.push(invalid);
     return { inserted: false, warnings };
   }
 
