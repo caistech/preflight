@@ -75,3 +75,40 @@ external-facing communication:
 - [[peter-wilks-geraldton]] — warm contact at City of Greater Geraldton, prior DA history
 - [[dennis-tools-as-pm-work]] — how Dennis positions tools externally (extension of PM role, not a side hobby)
 - [[preflight-assessor-variant]] — strategic context on the council-side adjacent product
+
+
+---
+
+**Platform role:** GBTA instance — not part of the standard Kira platform.
+
+## Architecture snapshot — 2026-11-23 (framework)
+
+> Canonical cross-repo topology: **`cais-shared-services/PLATFORM.md`**. This block is appended to every
+> repo's state file so a cold session starts oriented; it supersedes older "three-repository" framing.
+
+**The standard Kira platform — six repos:** `kira` (voice/coaching front door + Genome; calls the
+orchestrator) · `orchestrator` (connector + approval brain; own DB; drives connected services) ·
+`cais-shared-services` (the `@caistech/*` substrate; hosts `PLATFORM.md`) · `sayfix` (bug→fix product
+AND the build service the loop files into) · `easy-claude-code` (cloud execution engine) ·
+`platform-trust` (trust/guard layer).
+
+**The GBTA instance — NOT part of the standard platform:** `f2k-checkpoint` (construction project
+system; the orchestrator's first connected service) + `preflight`.
+
+**The connector-build loop — live end to end (verified 2026-11-23):** the capability-gap cron proposes
+daily (with backlog + staleness observability) → an operator **accepts** → **"Build this"** files a
+`sayfix.tickets.create` write → SayFix builds against the target repo → **PR + resolved preview** →
+`ready_for_review` → human merge. Verified against the `orchestrator` repo.
+- Prereqs for any new connected service: the target repo must be a **SayFix buildable product**
+  (`repos` row, central runner), and its **Vercel project must sit under the `corporate-ai-solutions`
+  team** (the runner resolves previews with a single `VERCEL_TEAM_ID`).
+- Mechanics: `orchestrator/docs/HLD.md §4.8` + `LLD §2.5`; SayFix side: `sayfix/PROJECT.md`.
+- The feeder is honest: a no-op request is escalated, never faked into a PR.
+
+**Seams:** Kira→orchestrator `POST /v1/dispatch`; orchestrator→SayFix `sayfix.tickets.create` →
+`POST /api/intake/tickets` (Bearer, fail-closed).
+
+**Session 2026-11-23 (shipped):** six-repo platform documented (#287 kira, #109 orchestrator, #13
+platform-trust, #69 f2k-checkpoint, SayFix PROJECT.md); SayFix UX/legal fixes #127–#135; feeder
+observability (#110); the "Build this" apply→build wire (#111); orchestrator Vercel project moved into
+the corporate-ai-solutions team so previews resolve.
