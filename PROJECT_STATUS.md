@@ -6,6 +6,9 @@
 > `~/PycharmProjects/packages/corporate-ai-common/PROJECT_STATUS_TEMPLATE.md`
 > wasn't present on this machine.
 
+> **Instance:** GBTA instance (Global Buildtech Australia / Factory2Key deployment) — **NOT** part of
+> the standard Kira platform. Topology: `cais-shared-services/PLATFORM.md` §2.
+
 ## What this project is
 
 Drafter-led pre-submission triage for DA drawing sets. Drafter drops a PDF; the
